@@ -14,7 +14,7 @@ use ui::{ActiveTheme as _, Button, SMALL_INSET, Text};
 const ICON: Pixels = px(18.);
 const REACH: Pixels = px(340.);
 /// Where the README says what to install alongside Sonora.
-const INSTALL: &str = "https://github.com/itzrealx2sad/Poly#linux";
+const INSTALL: &str = "https://github.com/Poly-HQ/Poly#linux";
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 

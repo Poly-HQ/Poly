@@ -162,6 +162,6 @@ crates/
 Poly Windows is free software released under the **GNU General Public License version 3.0 (GPL-3.0-or-later)**.
 
 - **Upstream Project:** Sonora (<https://github.com/sonorahq/sonora>), Copyright (C) Sonora Contributors.
-- **Fork Project:** Poly Windows (<https://github.com/itzrealx2sad/Poly>), Modifications Copyright (C) 2026 Poly Project Contributors.
+- **Fork Project:** Poly Windows (<https://github.com/Poly-HQ/Poly>), Modifications Copyright (C) 2026 Poly Project Contributors.
 - **License Terms:** See the [`COPYING`](./COPYING) and [`LICENSE`](./LICENSE) files for the full GNU General Public License v3.0 text.
 - **Modification Notice:** See [`NOTICE.md`](./NOTICE.md) for detailed attribution and the itemized ledger of modifications in accordance with GPL-3.0 Section 5.

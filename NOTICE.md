@@ -20,7 +20,7 @@ The original copyright and all upstream notices remain the property of the Sonor
 In compliance with **Section 5(a), 5(b), and 5(c) of the GNU General Public License v3.0**:
 
 - **Derivative Project:** Poly Windows (Sonora Fork)
-- **Fork Maintainers:** Poly Project Contributors (<https://github.com/itzrealx2sad/Poly>)
+- **Fork Maintainers:** Poly Project Contributors (<https://github.com/Poly-HQ/Poly>)
 - **Date of Modifications:** October 2026
 - **License:** GNU General Public License version 3.0 or later (`GPL-3.0-or-later`)
 

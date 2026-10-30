@@ -20,7 +20,7 @@ const MAX_START_DRIFT_SECONDS: u64 = 2;
 const MAX_TEXT_UTF16_UNITS: usize = 128;
 const MUSIC: &str = "Music";
 const POLY_APP_NAME: &str = "Poly";
-const POLY_URL: &str = "https://github.com/itzrealx2sad/Poly/releases/latest";
+const POLY_URL: &str = "https://github.com/Poly-HQ/Poly/releases/latest";
 
 struct Attached {
     _discord: Entity<Discord>,

@@ -50,7 +50,7 @@ const HEADER_BLUR: Pixels = px(1.);
 /// no hard edge where sharp content emerges from the haze.
 const HEADER_FADE_TAIL: Pixels = px(48.);
 const LICENSE_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
-const SOURCE_URL: &str = "https://github.com/itzrealx2sad/Poly";
+const SOURCE_URL: &str = "https://github.com/Poly-HQ/Poly";
 
 const THEMES: &str = "themes";
 const PACKS: &str = "packs";

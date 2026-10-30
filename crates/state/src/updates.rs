@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{AppSettings, Io, join};
 
-const LATEST: &str = "https://api.github.com/repos/itzrealx2sad/Poly/releases/latest";
+const LATEST: &str = "https://api.github.com/repos/Poly-HQ/Poly/releases/latest";
 const INSTALLER: &str = match cfg!(target_arch = "aarch64") {
     true => "Poly-Setup-arm64.exe",
     false => "Poly-Setup.exe",
@@ -20,7 +20,7 @@ const INSTALLABLE: bool = cfg!(target_os = "windows");
 const AGENT: &str = concat!(
     "poly/",
     env!("POLY_BUILD_VERSION"),
-    " (https://github.com/itzrealx2sad/Poly)"
+    " (https://github.com/Poly-HQ/Poly)"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]

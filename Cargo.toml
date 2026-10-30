@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.43.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/itzrealx2sad/Poly"
+repository = "https://github.com/Poly-HQ/Poly"
 
 [workspace.dependencies]
 embed = { path = "crates/embed" }
