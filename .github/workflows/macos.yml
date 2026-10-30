@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach the macOS build to (e.g. 4b0c34ca67)"
+        description: "Release tag to attach the macOS build to (e.g. 844f6b67ca)"
         required: false
-        default: "4b0c34ca67"
+        default: ""
   push:
     tags: ["*"]
 
@@ -21,7 +21,7 @@ env:
 jobs:
   macos:
     name: build universal macos dmg
-    runs-on: macos-15
+    runs-on: macos-13
     permissions:
       contents: write
 
