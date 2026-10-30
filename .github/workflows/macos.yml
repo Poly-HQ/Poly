@@ -1,0 +1,173 @@
+name: build-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the macOS build to (e.g. 4b0c34ca67)"
+        required: false
+        default: "4b0c34ca67"
+  push:
+    tags: ["*"]
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  macos:
+    name: build universal macos dmg
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: determine tag and version
+        id: meta
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="$(git rev-parse --short=10 HEAD)"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Target Release Tag: $TAG"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-poly
+          cache-on-failure: true
+
+      - name: compile apple silicon (arm64)
+        env:
+          POLY_VERSION: ${{ env.TAG }}
+        run: cargo build --release --locked --package poly --target aarch64-apple-darwin
+
+      - name: compile intel (x86_64)
+        env:
+          POLY_VERSION: ${{ env.TAG }}
+        run: cargo build --release --locked --package poly --target x86_64-apple-darwin
+
+      - name: assemble universal poly.app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p Poly.app/Contents/MacOS Poly.app/Contents/Resources
+
+          if [ -f "target/aarch64-apple-darwin/release/poly" ] && [ -f "target/x86_64-apple-darwin/release/poly" ]; then
+            lipo -create \
+              -output Poly.app/Contents/MacOS/poly \
+              target/aarch64-apple-darwin/release/poly \
+              target/x86_64-apple-darwin/release/poly
+          else
+            cp target/aarch64-apple-darwin/release/poly Poly.app/Contents/MacOS/poly 2>/dev/null || cp target/x86_64-apple-darwin/release/poly Poly.app/Contents/MacOS/poly
+          fi
+          chmod +x Poly.app/Contents/MacOS/poly
+          lipo -info Poly.app/Contents/MacOS/poly
+
+          if [ -f assets/macos/poly.icns ]; then
+            cp assets/macos/poly.icns Poly.app/Contents/Resources/poly.icns
+          elif [ -f assets/macos/sonora.icns ]; then
+            cp assets/macos/sonora.icns Poly.app/Contents/Resources/poly.icns
+          fi
+
+          cp COPYING Poly.app/Contents/Resources/LICENSE
+          cp THIRD-PARTY.md Poly.app/Contents/Resources/
+          if [ -f assets/fonts/LICENSE.txt ]; then
+            cp assets/fonts/LICENSE.txt Poly.app/Contents/Resources/LICENSE.Inter
+          fi
+
+          mkdir -p Poly.app/Contents/Resources/icons
+          if [ -f assets/icons/LICENSE ]; then
+            cp assets/icons/LICENSE Poly.app/Contents/Resources/icons/LICENSE
+          fi
+          for licence in assets/icons/*/LICENSE; do
+            if [ -f "$licence" ]; then
+              pack="$(basename "$(dirname "$licence")")"
+              cp "$licence" "Poly.app/Contents/Resources/icons/LICENSE.$pack"
+            fi
+          done
+
+          sed "s/@VERSION@/$TAG/g" assets/macos/Info.plist > Poly.app/Contents/Info.plist
+          plutil -lint Poly.app/Contents/Info.plist
+
+      - name: ad-hoc codesign
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - Poly.app
+          codesign --verify --strict --verbose=2 Poly.app
+
+      - name: create dmg and zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist staging
+          cp -R Poly.app staging/
+          ln -s /Applications staging/Applications
+          megabytes=$(du -ms staging | cut -f1)
+          hdiutil create \
+            -volname "Poly" \
+            -srcfolder staging \
+            -size "$((megabytes + 64))m" \
+            -ov \
+            -format UDZO \
+            "dist/Poly-$TAG-macOS.dmg"
+
+          cd staging
+          zip -r -y -q "../dist/Poly-$TAG-macOS.zip" Poly.app
+          cd ..
+
+      - name: generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 "Poly-$TAG-macOS.dmg" "Poly-$TAG-macOS.zip" > SHA256SUMS-macos.txt
+          cat SHA256SUMS-macos.txt
+          cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Poly-macOS
+          path: dist/*
+
+      - name: publish to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" 2>/dev/null; then
+            gh release create "$TAG" "dist/Poly-$TAG-macOS.dmg" "dist/Poly-$TAG-macOS.zip" \
+              --title "Poly $TAG" \
+              --notes "Release $TAG"
+          else
+            gh release upload "$TAG" "dist/Poly-$TAG-macOS.dmg" "dist/Poly-$TAG-macOS.zip" --clobber
+          fi
+
+          if gh release download "$TAG" -p "SHA256SUMS" --output "dist/SHA256SUMS-existing" 2>/dev/null; then
+            grep -v "Poly-.*-macOS\." "dist/SHA256SUMS-existing" > "dist/SHA256SUMS-all" || true
+            cat "dist/SHA256SUMS-macos.txt" >> "dist/SHA256SUMS-all"
+            gh release upload "$TAG" "dist/SHA256SUMS-all#SHA256SUMS" --clobber
+          else
+            gh release upload "$TAG" "dist/SHA256SUMS-macos.txt#SHA256SUMS" --clobber
+          fi
