@@ -46,8 +46,9 @@ jobs:
           echo "Target Release Tag: $TAG"
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: install rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:

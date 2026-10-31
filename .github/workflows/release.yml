@@ -43,8 +43,10 @@ jobs:
           Write-Host "Target Tag: $tag"
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
+
+      - name: install rust targets
+        shell: pwsh
+        run: rustup target add x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -114,8 +116,9 @@ jobs:
             libvulkan-dev libdbus-1-dev libssl-dev
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
+
+      - name: install rust targets
+        run: rustup target add x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -183,8 +186,9 @@ jobs:
           echo "Target Release Tag: $TAG"
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: install rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
