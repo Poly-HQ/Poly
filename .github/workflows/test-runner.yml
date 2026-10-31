@@ -1,0 +1,17 @@
+name: test-runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: probe runner
+        run: |
+          uname -a
+          sw_vers
