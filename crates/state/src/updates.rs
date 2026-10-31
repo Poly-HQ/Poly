@@ -181,7 +181,10 @@ async fn latest(http: &reqwest::Client) -> Result<Option<Release>> {
         published
             .assets
             .iter()
-            .find(|asset| asset.name == wanted)
+            .find(|asset| {
+                asset.name == wanted
+                    || (wanted == "Poly-Setup.exe" && asset.name == "Poly-Windows.exe")
+            })
             .map(|asset| asset.browser_download_url.clone())
     };
 

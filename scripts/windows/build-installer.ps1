@@ -29,3 +29,5 @@ if (-not $env:SONORA_SETUP) { $env:SONORA_SETUP = "Poly-Setup" }
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }
+
+Copy-Item (Join-Path $outputPath "$($env:SONORA_SETUP).exe") (Join-Path $outputPath "Poly-Windows.exe") -Force

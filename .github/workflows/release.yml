@@ -80,7 +80,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: dist/Poly-Setup.exe
+          path: |
+            dist/Poly-Windows.exe
+            dist/Poly-Setup.exe
 
   linux:
     name: build linux (x64)
@@ -155,12 +157,12 @@ jobs:
           fi
 
           mkdir -p dist
-          tar -czf "dist/Poly-$TAG-linux-x86_64.tar.gz" -C staging .
+          tar -czf "dist/Poly-Linux.tar.gz" -C staging .
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux
-          path: dist/Poly-*-linux-x86_64.tar.gz
+          path: dist/Poly-Linux.tar.gz
 
   macos:
     name: build universal macos dmg
@@ -270,18 +272,18 @@ jobs:
             -size "$((megabytes + 64))m" \
             -ov \
             -format UDZO \
-            "dist/Poly-$TAG-macOS.dmg"
+            "dist/Poly-macOS.dmg"
 
           cd staging
-          zip -r -y -q "../dist/Poly-$TAG-macOS.zip" Poly.app
+          zip -r -y -q "../dist/Poly-macOS.zip" Poly.app
           cd ..
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
           path: |
-            dist/Poly-*-macOS.dmg
-            dist/Poly-*-macOS.zip
+            dist/Poly-macOS.dmg
+            dist/Poly-macOS.zip
 
   publish:
     name: publish release

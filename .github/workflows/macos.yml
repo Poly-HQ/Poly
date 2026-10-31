@@ -130,10 +130,10 @@ jobs:
             -size "$((megabytes + 64))m" \
             -ov \
             -format UDZO \
-            "dist/Poly-$TAG-macOS.dmg"
+            "dist/Poly-macOS.dmg"
 
           cd staging
-          zip -r -y -q "../dist/Poly-$TAG-macOS.zip" Poly.app
+          zip -r -y -q "../dist/Poly-macOS.zip" Poly.app
           cd ..
 
       - name: generate checksums
@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          shasum -a 256 "Poly-$TAG-macOS.dmg" "Poly-$TAG-macOS.zip" > SHA256SUMS-macos.txt
+          shasum -a 256 "Poly-macOS.dmg" "Poly-macOS.zip" > SHA256SUMS-macos.txt
           cat SHA256SUMS-macos.txt
           cd ..
 
@@ -158,17 +158,17 @@ jobs:
           set -euo pipefail
 
           if ! gh release view "$TAG" 2>/dev/null; then
-            gh release create "$TAG" "dist/Poly-$TAG-macOS.dmg" "dist/Poly-$TAG-macOS.zip" \
+            gh release create "$TAG" "dist/Poly-macOS.dmg" "dist/Poly-macOS.zip" \
               --title "Poly $TAG" \
               --notes "Release $TAG"
           else
-            gh release upload "$TAG" "dist/Poly-$TAG-macOS.dmg" "dist/Poly-$TAG-macOS.zip" --clobber
+            gh release upload "$TAG" "dist/Poly-macOS.dmg" "dist/Poly-macOS.zip" --clobber
           fi
 
           if gh release download "$TAG" -p "SHA256SUMS" --output "dist/SHA256SUMS-existing" 2>/dev/null; then
-            grep -v "Poly-.*-macOS\." "dist/SHA256SUMS-existing" > "dist/SHA256SUMS-all" || true
-            cat "dist/SHA256SUMS-macos.txt" >> "dist/SHA256SUMS-all"
-            gh release upload "$TAG" "dist/SHA256SUMS-all#SHA256SUMS" --clobber
+            grep -v "Poly-macOS\." "dist/SHA256SUMS-existing" > "dist/SHA256SUMS" || true
+            cat "dist/SHA256SUMS-macos.txt" >> "dist/SHA256SUMS"
+            gh release upload "$TAG" "dist/SHA256SUMS" --clobber
           else
             gh release upload "$TAG" "dist/SHA256SUMS-macos.txt#SHA256SUMS" --clobber
           fi
