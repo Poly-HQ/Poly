@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Poly
+GenericName=Music Player
+Comment=A native music streaming client, built with Rust and GPUI
+Icon=poly
+Exec=poly %U
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;spotify;audio;player;
+MimeType=x-scheme-handler/spotify;audio/mpeg;audio/flac;audio/mp4;audio/aac;audio/ogg;audio/opus;audio/x-wav;audio/x-aiff;audio/webm;audio/x-matroska;audio/x-wavpack;audio/x-ape;
+StartupWMClass=poly
+StartupNotify=true
