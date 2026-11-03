@@ -200,15 +200,10 @@ panic = "abort"
 strip = "debuginfo"
 
 [profile.dev]
+opt-level = 0
+debug = 1
 split-debuginfo = "unpacked"
-
-[profile.dev.package.ui]
-debug = false
-opt-level = 2
-
-[profile.dev.package.views]
-debug = false
-opt-level = 2
+incremental = true
 
 [profile.dev.package."*"]
 debug = false
