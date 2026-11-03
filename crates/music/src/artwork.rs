@@ -465,21 +465,30 @@ async fn search_apple_motion(
             .filter_map(|attr| {
                 let video = extract_editorial_video(attr.editorial_video)?;
                 println!("[motion-artwork] Album candidate '{}' has motion video", attr.name);
-                Some((attr.name, Some(video)))
+                Some((attr.name, video))
             })
             .collect::<Vec<_>>();
-        if !album.is_empty()
-            && let Some(video) = closest(matched.iter().cloned(), album)
-        {
-            return Some(video);
+
+        let mut picked_video = None;
+        for (candidate_name, video) in matched {
+            if (!album.is_empty() && motion_title_matches(&candidate_name, album))
+                || (!title.is_empty() && motion_title_matches(&candidate_name, title))
+            {
+                println!(
+                    "[motion-artwork] Accepted album candidate '{}' (matched wanted album: '{}', title: '{}')",
+                    candidate_name, album, title
+                );
+                picked_video = Some(video);
+                break;
+            } else {
+                println!(
+                    "[motion-artwork] Rejected album candidate '{}' (wanted album: '{}', title: '{}')",
+                    candidate_name, album, title
+                );
+            }
         }
-        if !title.is_empty()
-            && let Some(video) = closest(matched.iter().cloned(), title)
-        {
+        if let Some(video) = picked_video {
             return Some(video);
-        }
-        if matched.len() == 1 {
-            return matched.into_iter().next().and_then(|(_, v)| v);
         }
     }
 
@@ -510,6 +519,15 @@ async fn search_apple_motion(
     }
 
     None
+}
+
+fn motion_title_matches(candidate: &str, wanted: &str) -> bool {
+    let c = compared(&searchable(candidate));
+    let w = compared(wanted);
+    if c.is_empty() || w.is_empty() {
+        return false;
+    }
+    c == w || extends(&c, &w) || extends(&w, &c)
 }
 
 fn extract_editorial_video(editorial: Option<AppleEditorialVideo>) -> Option<String> {
