@@ -129,6 +129,7 @@ fn fetch(
 struct Decoded {
     image: Arc<RenderImage>,
     palette: CoverPalette,
+    motion: Option<Arc<Vec<Arc<RenderImage>>>>,
 }
 
 impl Asset for ArtworkAssetLoader {
@@ -148,13 +149,26 @@ impl Asset for ArtworkAssetLoader {
 
             if is_mp4(&bytes) {
                 return on_decoder(move || {
-                    let image = Arc::new(RenderImage::new(mp4_frames(
-                        &resource,
-                        &bytes,
-                        source.edge,
-                    )?));
+                    let raw_frames = mp4_frames(&resource, &bytes, source.edge)?;
+                    let first_frame = raw_frames.first().cloned();
+                    let motion_frames: Arc<Vec<Arc<RenderImage>>> = Arc::new(
+                        raw_frames
+                            .into_iter()
+                            .map(|f| Arc::new(RenderImage::new(vec![f])))
+                            .collect(),
+                    );
+                    let image = motion_frames
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Arc::new(RenderImage::new(first_frame.into_iter().collect::<Vec<_>>()))
+                        });
                     let palette = of_image(&image);
-                    Ok(Decoded { image, palette })
+                    Ok(Decoded {
+                        image,
+                        palette,
+                        motion: Some(motion_frames),
+                    })
                 })
                 .await
                 .unwrap_or_else(|| Err(ImageCacheError::Asset("artwork decoder stopped".into())));
@@ -163,7 +177,11 @@ impl Asset for ArtworkAssetLoader {
             let Ok(format) = image::guess_format(&bytes) else {
                 let image = svg_renderer.render_single_frame(&bytes, 1.0)?;
                 let palette = of_image(&image);
-                return Ok(Decoded { image, palette });
+                return Ok(Decoded {
+                    image,
+                    palette,
+                    motion: None,
+                });
             };
             on_decoder(move || {
                 let image = Arc::new(RenderImage::new(raster_frames(
@@ -172,7 +190,11 @@ impl Asset for ArtworkAssetLoader {
                     source.edge,
                 )?));
                 let palette = of_image(&image);
-                Ok(Decoded { image, palette })
+                Ok(Decoded {
+                    image,
+                    palette,
+                    motion: None,
+                })
             })
             .await
             .unwrap_or_else(|| Err(ImageCacheError::Asset("artwork decoder stopped".into())))
@@ -333,8 +355,8 @@ fn mp4_frames(
                 file
             }
         };
-        let max_frames = if edge > 0 && edge <= PALETTE_EDGE { 1 } else { 75 };
-        let target_edge = if edge == 0 { 320 } else { edge.min(320) };
+        let max_frames = if edge > 0 && edge <= PALETTE_EDGE { 1 } else { 120 };
+        let target_edge = if edge == 0 { 408 } else { edge.min(408) };
         println!(
             "[motion-artwork] Decoding MP4 frames for path: {} (bytes: {}, target_edge: {}, max_frames: {})",
             path.display(),
@@ -784,26 +806,44 @@ mod win_mf {
                 let _ = unlock_buf(buffer);
 
                 for pixel in out.as_chunks_mut::<4>().0 {
-                    let b = pixel[0];
-                    let r = pixel[2];
-                    pixel[0] = r;
-                    pixel[2] = b;
                     pixel[3] = 255;
                 }
 
                 let Some(raw_img) = RgbaImage::from_raw(width, height, out) else {
                     continue;
                 };
-                let final_img = if target_edge > 0 && target_edge < width.min(height) {
+                let (w, h) = (raw_img.width(), raw_img.height());
+                let side = w.min(h);
+                let square = if w == h {
+                    raw_img
+                } else {
+                    imageops::crop_imm(&raw_img, (w - side) / 2, (h - side) / 2, side, side).to_image()
+                };
+                let final_img = if target_edge > 0 && target_edge < side {
                     imageops::resize(
-                        &raw_img,
+                        &square,
                         target_edge,
                         target_edge,
                         imageops::FilterType::Triangle,
                     )
                 } else {
-                    raw_img
+                    square
                 };
+
+                if frames.len() == 0 || frames.len() == 10 || frames.len() == 25 || frames.len() == 50 {
+                    let sample_bytes = final_img.as_raw();
+                    let mut hash: u64 = 0xcbf29ce484222325;
+                    for &b in sample_bytes.iter().step_by(128) {
+                        hash = (hash ^ (b as u64)).wrapping_mul(0x100000001b3);
+                    }
+                    println!(
+                        "[motion-artwork] Decoded frame #{:02}: sample_hash={:016x}, dims={}x{}",
+                        frames.len(),
+                        hash,
+                        final_img.width(),
+                        final_img.height()
+                    );
+                }
 
                 frames.push(Frame::from_parts(
                     final_img,
@@ -820,6 +860,7 @@ mod win_mf {
 
 struct Cached {
     value: Result<Arc<RenderImage>, ImageCacheError>,
+    motion: Option<Arc<Vec<Arc<RenderImage>>>>,
     bytes: usize,
     used: Instant,
 }
@@ -878,13 +919,19 @@ impl ArtworkCache {
                 self.tints.insert(canonical, decoded.palette);
             }
         }
+        let motion = decoded.as_ref().ok().and_then(|d| d.motion.clone());
         let value = decoded.map(|decoded| decoded.image);
-        let bytes = value.as_ref().map_or(0, |image| image_bytes(image));
+        let bytes = if let Some(frames) = &motion {
+            frames.iter().map(|f| image_bytes(f)).sum()
+        } else {
+            value.as_ref().map_or(0, |image| image_bytes(image))
+        };
         self.bytes = self.bytes.saturating_add(bytes);
         self.items.insert(
             resource,
             Cached {
                 value,
+                motion,
                 bytes,
                 used: Instant::now(),
             },
@@ -1311,6 +1358,37 @@ pub fn cover_palette(url: &str, cx: &App) -> Option<CoverPalette> {
     }
     let canonical = canonical_resource(&resource);
     cache.tints.get(&canonical).copied()
+}
+
+pub fn load_motion_frames(
+    url: &str,
+    size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Arc<Vec<Arc<RenderImage>>>> {
+    let edge = sample_edge(size, window);
+    let cache = ArtworkCache::entity(cx);
+    cache.update(cx, |cache, cx| {
+        let resource = resource_at(url.to_string(), edge);
+        let key = (resource.clone(), edge);
+        if let Some(cached) = cache.items.get_mut(&key) {
+            cached.used = Instant::now();
+            return cached.motion.clone();
+        }
+        if let Some(mut cached) = cache.condemned.remove(&key) {
+            cached.used = Instant::now();
+            let motion = cached.motion.clone();
+            cache.bytes = cache.bytes.saturating_add(cached.bytes);
+            cache.items.insert(key, cached);
+            return motion;
+        }
+        let _ = cache.load_at(&resource, edge, window, cx);
+        if let Some(cached) = cache.items.get_mut(&key) {
+            cached.used = Instant::now();
+            return cached.motion.clone();
+        }
+        None
+    })
 }
 
 pub(crate) fn sample_palette(url: SharedString, cx: &mut App) -> Task<CoverPalette> {

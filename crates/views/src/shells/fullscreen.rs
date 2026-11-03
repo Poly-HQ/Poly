@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     AnyView, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, Render,
     ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
 };
-use gpui::{Window, canvas, deferred, div, phi, px, relative};
+use gpui::{Window, canvas, deferred, div, img, phi, px, relative};
 use i18n::t;
 use input::{ToggleFullscreen, ToggleWindowFullscreen, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
@@ -20,7 +20,7 @@ use state::{AppSettings, Cover, FullscreenControlsAutohide, Playback, Queue, Sid
 use ui::{
     ActiveTheme as _, Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Motion,
     Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Springs, TabBar, Text,
-    Visualizer, clock, glass, snapped,
+    Visualizer, clock, glass, load_motion_frames, snapped,
 };
 
 use crate::chrome::{Aside, TitleBarOptions};
@@ -99,6 +99,9 @@ pub struct FullscreenView {
     muted: Option<f32>,
     large: Option<SharedString>,
     revision: usize,
+    motion_frame: usize,
+    motion_task: Option<Task<()>>,
+    motion_url: Option<SharedString>,
     track_menu: ItemMenu,
     context_menu: Option<(music::Track, Point<Pixels>)>,
     last_moved: Instant,
@@ -153,6 +156,9 @@ impl FullscreenView {
             muted: None,
             large: None,
             revision: 0,
+            motion_frame: 0,
+            motion_task: None,
+            motion_url: None,
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             context_menu: None,
             last_moved: Instant::now(),
@@ -357,6 +363,7 @@ impl FullscreenView {
         layout_side: Pixels,
         raster_side: Pixels,
         presentation_scale: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let radius = cx.theme().radius * 2.;
@@ -380,10 +387,82 @@ impl FullscreenView {
             println!("[fullscreen] Active artwork URL switched to: {:?}", large);
             self.large = large.map(SharedString::from);
             self.revision += 1;
+            self.motion_task = None;
+            self.motion_frame = 0;
+            self.motion_url = None;
         }
         let large = self.large.clone();
         let revision = self.revision;
         let waiting = !local && album.is_some() && cover_large.is_none();
+
+        let is_mp4 = large.as_ref().map_or(false, |url| url.ends_with(".mp4"));
+        let motion_frames = if is_mp4 {
+            large
+                .as_ref()
+                .and_then(|url| load_motion_frames(url, raster_side, window, cx))
+        } else {
+            None
+        };
+
+        if let Some(frames) = &motion_frames {
+            let frame_count = frames.len();
+            if self.motion_url.as_deref() != large.as_deref() || self.motion_task.is_none() {
+                self.motion_url = large.clone();
+                self.motion_frame = 0;
+                let duration = Duration::from_millis(40);
+                self.motion_task = Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(duration).await;
+                        let Ok(()) = this.update(cx, |view, cx| {
+                            view.motion_frame = (view.motion_frame + 1) % frame_count;
+                            cx.notify();
+                        }) else {
+                            break;
+                        };
+                    }
+                }));
+            }
+        } else if !is_mp4 {
+            self.motion_task = None;
+            self.motion_url = None;
+        }
+
+        let large_child = if let Some(frames) = &motion_frames {
+            let frame = frames[self.motion_frame % frames.len()].clone();
+            Some(
+                div()
+                    .absolute()
+                    .top(pad)
+                    .left(pad)
+                    .child(
+                        img(frame)
+                            .size(raster_side)
+                            .rounded(radius)
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .motion(("cover-large", revision), Motion::Slow, |art, t| {
+                        art.opacity(t)
+                    })
+                    .into_any_element(),
+            )
+        } else {
+            large.map(|url| {
+                div()
+                    .absolute()
+                    .top(pad)
+                    .left(pad)
+                    .child(
+                        Artwork::new(Some(url))
+                            .size(raster_side)
+                            .corner_radius(radius)
+                            .transparent_loading(true),
+                    )
+                    .motion(("cover-large", revision), Motion::Slow, |art, t| {
+                        art.opacity(t)
+                    })
+                    .into_any_element()
+            })
+        };
 
         div()
             .id("fullscreen-artwork")
@@ -409,23 +488,7 @@ impl FullscreenView {
                                 .soft(waiting),
                         ),
                     )
-                    .when_some(large, |this, url| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .top(pad)
-                                .left(pad)
-                                .child(
-                                    Artwork::new(Some(url))
-                                        .size(raster_side)
-                                        .corner_radius(radius)
-                                        .transparent_loading(true),
-                                )
-                                .motion(("cover-large", revision), Motion::Slow, |art, t| {
-                                    art.opacity(t)
-                                }),
-                        )
-                    }),
+                    .when_some(large_child, |this, child| this.child(child)),
             )
     }
 
@@ -1223,7 +1286,7 @@ impl Render for FullscreenView {
                                     |this| this.flex_1().h_full(),
                                     |this| this.w_full(),
                                 )
-                                .child(self.artwork(side, raster_side, cover_scale, cx))
+                                .child(self.artwork(side, raster_side, cover_scale, window, cx))
                                 .child(self.meta(hide, lift, cx))
                                 .when(split, |this| {
                                     this.child(self.dock(
