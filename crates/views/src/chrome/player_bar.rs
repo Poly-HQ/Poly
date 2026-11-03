@@ -459,6 +459,7 @@ impl Render for PlayerBar {
 
                                     div()
                                         .id("now-playing-track-marquee-container")
+                                        .flex_none()
                                         .overflow_hidden()
                                         .when(is_long, |this| this.max_w(max_width))
                                         .child(content)
