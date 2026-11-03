@@ -47,7 +47,7 @@ impl Cover {
     }
 
     pub fn large(&self) -> Option<&str> {
-        self.motion.as_deref().or(self.large.as_deref())
+        self.large.as_deref()
     }
 
     /// Returns the large artwork only when it belongs to `album`.
@@ -96,7 +96,7 @@ impl Cover {
         cx.notify();
 
         let need_large = album.is_some() && self.large.is_none();
-        let need_motion = cached_motion.is_none();
+        let need_motion = false;
         if !need_large && !need_motion {
             return;
         }

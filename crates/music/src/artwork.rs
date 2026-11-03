@@ -294,7 +294,11 @@ struct AppleIdItem {
     id: String,
 }
 
-pub async fn motion_artwork(album_id: Option<&str>, track: &Track) -> Option<String> {
+pub async fn motion_artwork(_album_id: Option<&str>, _track: &Track) -> Option<String> {
+    None
+}
+
+async fn _unused_motion_artwork(album_id: Option<&str>, track: &Track) -> Option<String> {
     println!(
         "[motion-artwork] Starting lookup: name='{}', artists='{}', album='{}', album_id={:?}",
         track.name, track.artists, track.album, album_id
