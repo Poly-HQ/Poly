@@ -12,6 +12,7 @@ mod genre;
 mod history;
 mod home;
 mod library;
+mod links;
 mod logging;
 mod lyrics;
 mod mosaic;
@@ -48,6 +49,7 @@ pub use home::Home;
 pub use library::{
     Addition, Library, LibraryEvent, LibraryPart, LibraryState, Problem, Ready, Shelf,
 };
+pub use links::{LinkKind, ProviderLink, ResolvedLink, parse_link, resolve_link};
 pub use logging::log_file;
 pub use lyrics::{Lyrics, LyricsState};
 pub use network::{Network, Reconnected};

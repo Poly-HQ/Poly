@@ -34,6 +34,7 @@ fn fonts() {
     let out = PathBuf::from(env::var("OUT_DIR").expect("cargo sets the output")).join("fonts.rs");
     fs::write(&out, source).expect("cannot write the font registry");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../../assets/fonts");
 }
 
 /// The workspace root, taken from the crate's own manifest directory without touching the

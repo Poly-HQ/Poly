@@ -122,6 +122,7 @@ struct Scored {
 
 pub struct Search {
     query: String,
+    resolved_query: Option<String>,
     served: Option<String>,
     catalog: Catalog,
     portraits: HashMap<String, String>,
@@ -163,6 +164,7 @@ impl Search {
 
         Self {
             query: String::new(),
+            resolved_query: None,
             served: None,
             catalog: Catalog::default(),
             portraits: HashMap::new(),
@@ -210,6 +212,7 @@ impl Search {
         self.lyric_task = None;
         self.lyric_matches.clear();
         self.query.clear();
+        self.resolved_query = None;
         self.served = None;
         self.catalog.clear();
         self.portraits.clear();
@@ -225,6 +228,7 @@ impl Search {
             return;
         }
         self.query = query.clone();
+        self.resolved_query = None;
         self.error = None;
 
         if query.is_empty() {
@@ -239,6 +243,114 @@ impl Search {
         }
 
         self.rank(cx);
+
+        let Some(client) = self.session.read(cx).client() else {
+            self.loading = false;
+            cx.notify();
+            return;
+        };
+
+        if let Some(link) = crate::links::parse_link(&query) {
+            self.loading = true;
+            cx.notify();
+
+            let io = self.io.clone();
+            self.task = Some(cx.spawn(async move |this, cx| {
+                let resolved = crate::links::resolve_link(link, client.as_ref()).await;
+                let search_term = resolved.search_query.clone();
+
+                let songs = {
+                    let client = client.clone();
+                    let asked = search_term.clone();
+                    io.spawn(async move {
+                        if asked.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            client.search(&asked).await
+                        }
+                    })
+                };
+                let albums = {
+                    let client = client.clone();
+                    let asked = search_term.clone();
+                    io.spawn(async move {
+                        if asked.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            client.search_albums(&asked).await
+                        }
+                    })
+                };
+                let playlists = {
+                    let client = client.clone();
+                    let asked = search_term.clone();
+                    io.spawn(async move {
+                        if asked.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            client.search_playlists(&asked).await
+                        }
+                    })
+                };
+                let (songs, albums, playlists) =
+                    (join(songs).await, join(albums).await, join(playlists).await);
+
+                this.update(cx, |this, cx| {
+                    if this.query != query {
+                        return;
+                    }
+                    this.loading = false;
+                    this.resolved_query = (!search_term.is_empty()).then(|| search_term.clone());
+
+                    let mut trouble = Vec::new();
+                    let Catalog {
+                        tracks,
+                        albums: kept_albums,
+                        playlists: kept_playlists,
+                    } = std::mem::take(&mut this.catalog);
+
+                    let mut new_tracks = salvaged(songs, tracks, &mut trouble);
+                    if let Some(track) = resolved.track {
+                        if !new_tracks.iter().any(|t| t.id == track.id) {
+                            new_tracks.insert(0, track);
+                        }
+                    }
+
+                    let mut new_albums = salvaged(albums, kept_albums, &mut trouble);
+                    if let Some(album) = resolved.album {
+                        if !new_albums.iter().any(|a| a.id == album.id) {
+                            new_albums.insert(0, album);
+                        }
+                    }
+
+                    let mut new_playlists = salvaged(playlists, kept_playlists, &mut trouble);
+                    if let Some(playlist) = resolved.playlist {
+                        if !new_playlists.iter().any(|p| p.id == playlist.id) {
+                            new_playlists.insert(0, playlist);
+                        }
+                    }
+
+                    this.catalog = Catalog {
+                        tracks: new_tracks,
+                        albums: new_albums,
+                        playlists: new_playlists,
+                    };
+
+                    match trouble.first() {
+                        Some(reason) => Network::failed(reason, cx),
+                        None => {
+                            Network::reached(cx);
+                            this.served = Some(query);
+                        }
+                    }
+                    this.error = (!trouble.is_empty() && this.catalog.is_empty())
+                        .then(|| trouble.join(" · "));
+                    this.rank(cx);
+                })
+                .ok();
+            }));
+            return;
+        }
 
         let sheets = self.sheets.clone();
         let asked = query.clone();
@@ -257,12 +369,6 @@ impl Search {
             })
             .ok();
         }));
-
-        let Some(client) = self.session.read(cx).client() else {
-            self.loading = false;
-            cx.notify();
-            return;
-        };
 
         self.loading = true;
         cx.notify();
@@ -360,7 +466,7 @@ impl Search {
     }
 
     fn rank(&mut self, cx: &mut Context<Self>) {
-        let query = self.query.trim();
+        let query = self.resolved_query.as_deref().unwrap_or(self.query.trim());
         if query.is_empty() {
             self.hits.clear();
             cx.notify();

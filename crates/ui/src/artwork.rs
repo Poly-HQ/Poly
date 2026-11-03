@@ -451,11 +451,15 @@ mod win_mf {
     type FnMfCreateMediaType = unsafe extern "system" fn(*mut *mut c_void) -> i32;
     type FnMfCreateSourceReaderFromUrl =
         unsafe extern "system" fn(*const u16, *mut c_void, *mut *mut c_void) -> i32;
+    type FnCoInitializeEx = unsafe extern "system" fn(*mut c_void, u32) -> i32;
+    type FnCoUninitialize = unsafe extern "system" fn();
 
     struct MfProcs {
         create_attributes: FnMfCreateAttributes,
         create_media_type: FnMfCreateMediaType,
         create_reader: FnMfCreateSourceReaderFromUrl,
+        co_initialize_ex: Option<FnCoInitializeEx>,
+        co_uninitialize: Option<FnCoUninitialize>,
     }
 
     static MF_PROCS: OnceLock<Option<MfProcs>> = OnceLock::new();
@@ -465,6 +469,7 @@ mod win_mf {
             .get_or_init(|| unsafe {
                 let mfplat = LoadLibraryA(c"mfplat.dll".as_ptr());
                 let mfreadwrite = LoadLibraryA(c"mfreadwrite.dll".as_ptr());
+                let ole32 = LoadLibraryA(c"ole32.dll".as_ptr());
                 if mfplat.is_null() || mfreadwrite.is_null() {
                     return None;
                 }
@@ -481,13 +486,27 @@ mod win_mf {
                     return None;
                 }
                 let startup: FnMfStartup = std::mem::transmute(startup);
-                if startup(MF_VERSION, 0) < 0 {
+                let hr_startup = startup(MF_VERSION, 0);
+                if hr_startup < 0 {
+                    println!("[motion-artwork] MFStartup failed: 0x{:08X}", hr_startup as u32);
                     return None;
                 }
+                let (co_initialize_ex, co_uninitialize) = if !ole32.is_null() {
+                    let init = GetProcAddress(ole32, c"CoInitializeEx".as_ptr());
+                    let uninit = GetProcAddress(ole32, c"CoUninitialize".as_ptr());
+                    (
+                        (!init.is_null()).then(|| std::mem::transmute(init)),
+                        (!uninit.is_null()).then(|| std::mem::transmute(uninit)),
+                    )
+                } else {
+                    (None, None)
+                };
                 Some(MfProcs {
                     create_attributes: std::mem::transmute(create_attributes),
                     create_media_type: std::mem::transmute(create_media_type),
                     create_reader: std::mem::transmute(create_reader),
+                    co_initialize_ex,
+                    co_uninitialize,
                 })
             })
             .as_ref()
@@ -526,22 +545,27 @@ mod win_mf {
                 *mut *mut c_void,
             ) -> i32 = std::mem::transmute(vtbl_entry(reader, 6));
             let mut mt = null_mut();
-            if get_current_mt(reader, FIRST_VIDEO_STREAM, &mut mt) < 0 || mt.is_null() {
+            let hr = get_current_mt(reader, FIRST_VIDEO_STREAM, &mut mt);
+            if hr < 0 || mt.is_null() {
+                println!("[motion-artwork] GetCurrentMediaType failed: 0x{:08X}", hr as u32);
                 return None;
             }
             let _mt_guard = ComGuard(mt);
             let get_u64: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u64) -> i32 =
-                std::mem::transmute(vtbl_entry(mt, 14));
+                std::mem::transmute(vtbl_entry(mt, 8));
             let get_u32: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u32) -> i32 =
-                std::mem::transmute(vtbl_entry(mt, 13));
+                std::mem::transmute(vtbl_entry(mt, 7));
 
             let mut frame_size = 0u64;
-            if get_u64(mt, &MF_MT_FRAME_SIZE, &mut frame_size) < 0 {
+            let hr_size = get_u64(mt, &MF_MT_FRAME_SIZE, &mut frame_size);
+            if hr_size < 0 {
+                println!("[motion-artwork] Get MF_MT_FRAME_SIZE failed: 0x{:08X}", hr_size as u32);
                 return None;
             }
             let width = (frame_size >> 32) as u32;
             let height = (frame_size & 0xFFFF_FFFF) as u32;
             if width == 0 || height == 0 {
+                println!("[motion-artwork] Invalid frame size: {}x{}", width, height);
                 return None;
             }
 
@@ -572,8 +596,33 @@ mod win_mf {
         wide.push(0);
 
         unsafe {
+            let need_uninit = if let Some(init) = mf.co_initialize_ex {
+                init(null_mut(), 0) >= 0
+            } else {
+                false
+            };
+
+            let result = decode_mp4_file_inner(mf, &wide, target_edge, max_frames);
+
+            if need_uninit && let Some(uninit) = mf.co_uninitialize {
+                uninit();
+            }
+
+            result
+        }
+    }
+
+    unsafe fn decode_mp4_file_inner(
+        mf: &MfProcs,
+        wide: &[u16],
+        target_edge: u32,
+        max_frames: usize,
+    ) -> Option<Vec<Frame>> {
+        unsafe {
             let mut attrs = null_mut();
-            if (mf.create_attributes)(&mut attrs, 1) < 0 || attrs.is_null() {
+            let hr_attrs = (mf.create_attributes)(&mut attrs, 1);
+            if hr_attrs < 0 || attrs.is_null() {
+                println!("[motion-artwork] MFCreateAttributes failed: 0x{:08X}", hr_attrs as u32);
                 return None;
             }
             let _attrs_guard = ComGuard(attrs);
@@ -583,13 +632,22 @@ mod win_mf {
             let _ = set_u32(attrs, &MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1);
 
             let mut reader = null_mut();
-            if (mf.create_reader)(wide.as_ptr(), attrs, &mut reader) < 0 || reader.is_null() {
+            let hr_reader = (mf.create_reader)(wide.as_ptr(), attrs, &mut reader);
+            if hr_reader < 0 || reader.is_null() {
+                println!("[motion-artwork] MFCreateSourceReaderFromURL failed: 0x{:08X}", hr_reader as u32);
                 return None;
             }
             let _reader_guard = ComGuard(reader);
 
+            let set_stream_sel: unsafe extern "system" fn(*mut c_void, u32, i32) -> i32 =
+                std::mem::transmute(vtbl_entry(reader, 4));
+            let _ = set_stream_sel(reader, 0xFFFF_FFFE, 0);
+            let _ = set_stream_sel(reader, FIRST_VIDEO_STREAM, 1);
+
             let mut req_mt = null_mut();
-            if (mf.create_media_type)(&mut req_mt) < 0 || req_mt.is_null() {
+            let hr_mt = (mf.create_media_type)(&mut req_mt);
+            if hr_mt < 0 || req_mt.is_null() {
+                println!("[motion-artwork] MFCreateMediaType failed: 0x{:08X}", hr_mt as u32);
                 return None;
             }
             let _req_mt_guard = ComGuard(req_mt);
@@ -608,7 +666,9 @@ mod win_mf {
                 *mut u32,
                 *mut c_void,
             ) -> i32 = std::mem::transmute(vtbl_entry(reader, 7));
-            if set_current_mt(reader, FIRST_VIDEO_STREAM, null_mut(), req_mt) < 0 {
+            let hr_set_mt = set_current_mt(reader, FIRST_VIDEO_STREAM, null_mut(), req_mt);
+            if hr_set_mt < 0 {
+                println!("[motion-artwork] SetCurrentMediaType RGB32 failed: 0x{:08X}", hr_set_mt as u32);
                 return None;
             }
 
@@ -634,7 +694,7 @@ mod win_mf {
                 let mut timestamp = 0i64;
                 let mut sample = null_mut();
 
-                if read_sample(
+                let hr_read = read_sample(
                     reader,
                     FIRST_VIDEO_STREAM,
                     0,
@@ -642,8 +702,9 @@ mod win_mf {
                     &mut flags,
                     &mut timestamp,
                     &mut sample,
-                ) < 0
-                {
+                );
+                if hr_read < 0 {
+                    println!("[motion-artwork] ReadSample returned error 0x{:08X}", hr_read as u32);
                     break;
                 }
                 let _sample_guard = ComGuard(sample);
@@ -723,6 +784,10 @@ mod win_mf {
                 let _ = unlock_buf(buffer);
 
                 for pixel in out.as_chunks_mut::<4>().0 {
+                    let b = pixel[0];
+                    let r = pixel[2];
+                    pixel[0] = r;
+                    pixel[2] = b;
                     pixel[3] = 255;
                 }
 
