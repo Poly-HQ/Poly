@@ -1,3 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -204,4 +208,417 @@ fn compared(text: &str) -> String {
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+const APPLE_CATALOG: &str = "https://amp-api.music.apple.com/v1/catalog/us";
+const APPLE_ORIGIN: &str = "https://music.apple.com";
+const APPLE_REFERER: &str = "https://music.apple.com/";
+const MAX_MOTION_BYTES: u64 = 550_000;
+
+static MOTION_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+#[derive(Deserialize)]
+struct AppleDocument<T> {
+    #[serde(default = "Vec::new")]
+    data: Vec<T>,
+}
+
+#[derive(Deserialize)]
+struct AppleSearchResponse {
+    results: Option<AppleSearchResults>,
+}
+
+#[derive(Deserialize)]
+struct AppleSearchResults {
+    albums: Option<AppleDocument<AppleAlbumItem>>,
+    songs: Option<AppleDocument<AppleSongItem>>,
+}
+
+#[derive(Deserialize)]
+struct AppleAlbumItem {
+    attributes: Option<AppleAlbumAttributes>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppleAlbumAttributes {
+    name: String,
+    artist_name: String,
+    editorial_video: Option<AppleEditorialVideo>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppleEditorialVideo {
+    motion_square_video1x1: Option<AppleMotionAsset>,
+    motion_detail_square: Option<AppleMotionAsset>,
+}
+
+#[derive(Deserialize)]
+struct AppleMotionAsset {
+    video: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AppleSongItem {
+    attributes: Option<AppleSongAttributes>,
+    relationships: Option<AppleSongRelationships>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppleSongAttributes {
+    name: String,
+    artist_name: String,
+}
+
+#[derive(Deserialize)]
+struct AppleSongRelationships {
+    albums: Option<AppleDocument<AppleIdItem>>,
+}
+
+#[derive(Deserialize)]
+struct AppleIdItem {
+    id: String,
+}
+
+pub async fn motion_artwork(album_id: Option<&str>, track: &Track) -> Option<String> {
+    let http = MOTION_HTTP.get_or_init(reqwest::Client::new);
+    let token = crate::apple::auth::bearer(http).await.ok()?;
+    let playlist = resolve_motion_playlist(http, &token, album_id, track).await?;
+    download_motion_mp4(http, &playlist).await
+}
+
+async fn resolve_motion_playlist(
+    http: &reqwest::Client,
+    token: &str,
+    album_id: Option<&str>,
+    track: &Track,
+) -> Option<String> {
+    if let Some(id) = album_id.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+        && let Some(video) = fetch_apple_album_motion(http, token, id).await
+    {
+        return Some(video);
+    }
+
+    let artist = track
+        .artist_refs
+        .first()
+        .map(|artist| artist.name.as_str())
+        .or_else(|| track.artists.split(", ").next())
+        .map(searchable)
+        .unwrap_or_default();
+    let album = searchable(&track.album);
+    let title = searchable(&track.name);
+    if artist.is_empty() && album.is_empty() && title.is_empty() {
+        return None;
+    }
+
+    if !album.is_empty() {
+        let term = if artist.is_empty() {
+            album.clone()
+        } else {
+            format!("{artist} {album}")
+        };
+        if let Some(video) = search_apple_motion(http, token, &term, &artist, &album, &title).await {
+            return Some(video);
+        }
+    }
+
+    if !title.is_empty() && title != album {
+        let term = if artist.is_empty() {
+            title.clone()
+        } else {
+            format!("{artist} {title}")
+        };
+        if let Some(video) = search_apple_motion(http, token, &term, &artist, &album, &title).await {
+            return Some(video);
+        }
+    }
+
+    None
+}
+
+async fn fetch_apple_album_motion(
+    http: &reqwest::Client,
+    token: &str,
+    album_id: &str,
+) -> Option<String> {
+    let url = format!("{APPLE_CATALOG}/albums/{album_id}");
+    let doc: AppleDocument<AppleAlbumItem> = http
+        .get(url)
+        .bearer_auth(token)
+        .header(reqwest::header::ORIGIN, APPLE_ORIGIN)
+        .header(reqwest::header::REFERER, APPLE_REFERER)
+        .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT)
+        .query(&[("extend", "editorialVideo")])
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    doc.data
+        .into_iter()
+        .find_map(|item| extract_editorial_video(item.attributes?.editorial_video))
+}
+
+async fn search_apple_motion(
+    http: &reqwest::Client,
+    token: &str,
+    term: &str,
+    artist: &str,
+    album: &str,
+    title: &str,
+) -> Option<String> {
+    let url = format!("{APPLE_CATALOG}/search");
+    let resp: AppleSearchResponse = http
+        .get(url)
+        .bearer_auth(token)
+        .header(reqwest::header::ORIGIN, APPLE_ORIGIN)
+        .header(reqwest::header::REFERER, APPLE_REFERER)
+        .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT)
+        .query(&[
+            ("term", term),
+            ("types", "albums,songs"),
+            ("limit", "8"),
+            ("extend", "editorialVideo"),
+        ])
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let results = resp.results?;
+
+    if let Some(albums) = results.albums {
+        let matched = albums
+            .data
+            .into_iter()
+            .filter_map(|item| item.attributes)
+            .filter(|attr| artist.is_empty() || same_artist(&attr.artist_name, artist))
+            .filter_map(|attr| {
+                let video = extract_editorial_video(attr.editorial_video)?;
+                Some((attr.name, Some(video)))
+            })
+            .collect::<Vec<_>>();
+        if !album.is_empty()
+            && let Some(video) = closest(matched.iter().cloned(), album)
+        {
+            return Some(video);
+        }
+        if !title.is_empty()
+            && let Some(video) = closest(matched.into_iter(), title)
+        {
+            return Some(video);
+        }
+    }
+
+    if let Some(songs) = results.songs {
+        for song in songs.data {
+            let Some(attr) = song.attributes else {
+                continue;
+            };
+            if !artist.is_empty() && !same_artist(&attr.artist_name, artist) {
+                continue;
+            }
+            let song_name = compared(&searchable(&attr.name));
+            let wanted = compared(if title.is_empty() { album } else { title });
+            if !wanted.is_empty() && song_name != wanted && !extends(&song_name, &wanted) {
+                continue;
+            }
+            if let Some(album_id) = song
+                .relationships
+                .and_then(|rel| rel.albums)
+                .and_then(|albums| albums.data.into_iter().next())
+                .map(|item| item.id)
+                && let Some(video) = fetch_apple_album_motion(http, token, &album_id).await
+            {
+                return Some(video);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_editorial_video(editorial: Option<AppleEditorialVideo>) -> Option<String> {
+    let editorial = editorial?;
+    editorial
+        .motion_square_video1x1
+        .and_then(|asset| asset.video)
+        .or_else(|| editorial.motion_detail_square.and_then(|asset| asset.video))
+        .filter(|url| url.starts_with("https://"))
+}
+
+async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option<String> {
+    let mut hasher = DefaultHasher::new();
+    master_url.hash(&mut hasher);
+    let key = hasher.finish();
+    let dir = std::env::temp_dir().join("poly-motion");
+    std::fs::create_dir_all(&dir).ok()?;
+    let target = dir.join(format!("{key:016x}.mp4"));
+    if std::fs::metadata(&target).is_ok_and(|meta| meta.len() > 1024) {
+        return Some(format!("file://{}", target.display()));
+    }
+
+    let master_text = http
+        .get(master_url)
+        .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    let variant_uri = pick_square_avc1_variant(&master_text)?;
+    let variant_url = resolve_relative_url(master_url, &variant_uri)?;
+
+    let variant_text = http
+        .get(&variant_url)
+        .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    let (mp4_uri, end_byte) = parse_variant_mp4_range(&variant_text)?;
+    let mp4_url = resolve_relative_url(&variant_url, &mp4_uri)?;
+
+    let mut request = http
+        .get(&mp4_url)
+        .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT);
+    if end_byte > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes=0-{end_byte}"));
+    }
+    let bytes = request
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .bytes()
+        .await
+        .ok()?;
+    if bytes.len() <= 1024 {
+        return None;
+    }
+
+    let tmp = dir.join(format!("{key:016x}.tmp"));
+    std::fs::write(&tmp, &bytes).ok()?;
+    let _ = std::fs::rename(&tmp, &target);
+    if !target.exists() {
+        std::fs::write(&target, &bytes).ok()?;
+    }
+    Some(format!("file://{}", target.display()))
+}
+
+fn pick_square_avc1_variant(master: &str) -> Option<String> {
+    let mut best: Option<(i32, u64, String)> = None;
+    let mut lines = master.lines().map(str::trim);
+    while let Some(line) = lines.next() {
+        let Some(info) = line.strip_prefix("#EXT-X-STREAM-INF:") else {
+            continue;
+        };
+        let uri = lines
+            .by_ref()
+            .find(|next| !next.is_empty() && !next.starts_with('#'))?;
+        if !info.contains("avc1") {
+            continue;
+        }
+        let Some((width, height)) = parse_m3u8_resolution(info) else {
+            continue;
+        };
+        if width != height || width < 240 {
+            continue;
+        }
+        let bandwidth = parse_m3u8_u64(info, "BANDWIDTH=").unwrap_or(0);
+        let distance = (width as i32 - 408).abs();
+        let replace = match &best {
+            None => true,
+            Some((best_dist, best_bw, _)) => {
+                distance < *best_dist || (distance == *best_dist && bandwidth > *best_bw)
+            }
+        };
+        if replace {
+            best = Some((distance, bandwidth, uri.to_owned()));
+        }
+    }
+    best.map(|(_, _, uri)| uri)
+}
+
+fn parse_m3u8_resolution(info: &str) -> Option<(u32, u32)> {
+    let rest = info.split("RESOLUTION=").nth(1)?;
+    let token = rest.split(',').next()?.trim();
+    let (w, h) = token.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+fn parse_m3u8_u64(info: &str, key: &str) -> Option<u64> {
+    let rest = info.split(key).nth(1)?;
+    let token = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .trim();
+    token.parse().ok()
+}
+
+fn parse_variant_mp4_range(variant: &str) -> Option<(String, u64)> {
+    let mut uri = None;
+    let mut max_end = 0u64;
+    let mut segments = 0usize;
+
+    for line in variant.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("#EXT-X-MAP:") {
+            if let Some(u) = extract_quoted_attr(rest, "URI=\"") {
+                uri = Some(u);
+            }
+            if let Some(range) = extract_quoted_attr(rest, "BYTERANGE=\"")
+                && let Some(end) = parse_byterange_end(&range)
+            {
+                max_end = max_end.max(end);
+            }
+        } else if let Some(range) = line.strip_prefix("#EXT-X-BYTERANGE:") {
+            if let Some(end) = parse_byterange_end(range) {
+                if segments == 0 || end <= MAX_MOTION_BYTES {
+                    max_end = max_end.max(end);
+                    segments += 1;
+                }
+            }
+        } else if !line.is_empty() && !line.starts_with('#') && uri.is_none() {
+            uri = Some(line.to_owned());
+        }
+    }
+
+    Some((uri?, max_end))
+}
+
+fn extract_quoted_attr(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.split(prefix).nth(1)?;
+    Some(rest.split('"').next()?.to_owned())
+}
+
+fn parse_byterange_end(spec: &str) -> Option<u64> {
+    let (len_str, offset_str) = spec.trim().split_once('@')?;
+    let len: u64 = len_str.parse().ok()?;
+    let offset: u64 = offset_str.parse().ok()?;
+    Some(offset.saturating_add(len).saturating_sub(1))
+}
+
+fn resolve_relative_url(base: &str, target: &str) -> Option<String> {
+    if target.starts_with("https://") || target.starts_with("http://") {
+        return Some(target.to_owned());
+    }
+    let slash = base.rfind('/')?;
+    Some(format!("{}/{}", &base[..slash], target))
 }

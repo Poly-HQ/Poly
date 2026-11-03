@@ -44,7 +44,7 @@ const AHEAD: f32 = 0.6;
 const REVEAL: f32 = 0.6;
 const ACTIVE_VERSE_GROWTH: Pixels = px(2.);
 const FULLSCREEN_VERSE_GROWTH: Pixels = px(3.);
-const LYRICS_HORIZONTAL_INSET_REM: f32 = 1.5;
+const LYRICS_HORIZONTAL_INSET_REM: f32 = 2.25;
 // The largest window fullscreen lyrics keep their own size in. A larger one grows them by its
 // share of this one, so a verse keeps its size relative to the window.
 const LYRICS_FRAME: Size<Pixels> = size(px(1152.), px(648.));
@@ -1443,6 +1443,8 @@ impl Aside {
                             }
                         });
                     let content = div()
+                        .w_full()
+                        .min_w_0()
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -2073,6 +2075,8 @@ fn karaoke_lane(
 
     match plan.rows.is_empty() {
         false => div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .text_left()
@@ -2080,6 +2084,8 @@ fn karaoke_lane(
                 let reveal = revealed(plan, row, &windows, position, edge_fade);
                 lifted(
                     div()
+                        .w_full()
+                        .min_w_0()
                         .flex()
                         .when(!voice.lead(), |this| this.justify_end())
                         .child(lit(plan.text[row].clone(), reveal)),
@@ -2087,6 +2093,8 @@ fn karaoke_lane(
                 )
             })),
         true => div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_wrap()
             .text_left()
@@ -2200,6 +2208,8 @@ fn secondary_lyrics_lane(
     let size = sung.lane;
     let karaoke_capable = sung.karaoke && lane.worded();
     let lyrics = div()
+        .w_full()
+        .min_w_0()
         .text_size(size)
         .map(|this| match (karaoke_capable, lane.words.as_ref()) {
             (true, Some(words)) => this.child(karaoke_lane(
@@ -2211,7 +2221,19 @@ fn secondary_lyrics_lane(
                 voice,
                 sung,
             )),
-            _ => this.child(SharedString::from(lane.text.clone())),
+            _ => this.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .when(!voice.lead(), |this| this.justify_end())
+                    .children(
+                        plain_lyrics_fragments(&lane.text)
+                            .into_iter()
+                            .map(|piece| div().flex_none().whitespace_nowrap().child(SharedString::from(piece))),
+                    ),
+            ),
         });
     let held = shade(true);
     let lyrics = match dimming {
@@ -2223,6 +2245,8 @@ fn secondary_lyrics_lane(
         None => lyrics.text_color(tint).into_any_element(),
     };
     div()
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .when(!voice.lead(), |this| this.items_end().text_right())
@@ -2278,9 +2302,17 @@ fn font_key(font: &str) -> u64 {
 
 fn romanized_lyrics_lane(text: String, size: Pixels, theme: &ui::Theme) -> Div {
     div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
         .text_size(size)
         .text_color(theme.muted_foreground)
-        .child(SharedString::from(text))
+        .children(
+            plain_lyrics_fragments(&text)
+                .into_iter()
+                .map(|piece| div().flex_none().whitespace_nowrap().child(SharedString::from(piece))),
+        )
 }
 
 fn karaoke_window(
@@ -2432,16 +2464,14 @@ fn plain_lyrics_fragments(line: &str) -> Vec<String> {
     let mut fragments = Vec::new();
     let mut start = 0;
     let mut spacing = false;
-    let mut previous = None;
     for (index, letter) in line.char_indices() {
         if letter.is_whitespace() {
             spacing = true;
-        } else if spacing || previous.is_some_and(|previous| parts(previous, letter)) {
+        } else if spacing || (start < index && script_separable(&line[start..index], &line[index..])) {
             fragments.push(line[start..index].to_owned());
             start = index;
             spacing = false;
         }
-        previous = Some(letter);
     }
     if start < line.len() {
         fragments.push(line[start..].to_owned());
@@ -2568,23 +2598,21 @@ fn evenly_filled(fragments: &[SharedString], spoken: &[usize]) -> Vec<bool> {
 }
 
 fn separable(left: &str, right: &str) -> bool {
-    // spacing ends a row
     if right.starts_with(char::is_whitespace) {
         return false;
     }
     if left.ends_with(char::is_whitespace) {
         return true;
     }
-
-    match (left.chars().next_back(), right.chars().next()) {
-        (Some(left), Some(right)) => parts(left, right),
-        _ => false,
-    }
+    script_separable(left, right)
 }
 
 fn wide(letter: char) -> bool {
     matches!(letter,
-        '\u{2E80}'..='\u{303E}'
+        '\u{0E00}'..='\u{0EFF}'
+        | '\u{1000}'..='\u{109F}'
+        | '\u{1780}'..='\u{17FF}'
+        | '\u{2E80}'..='\u{303E}'
         | '\u{3041}'..='\u{33FF}'
         | '\u{3400}'..='\u{4DBF}'
         | '\u{4E00}'..='\u{9FFF}'
@@ -2595,8 +2623,88 @@ fn wide(letter: char) -> bool {
     )
 }
 
+fn thai_or_lao(letter: char) -> bool {
+    matches!(letter, '\u{0E00}'..='\u{0EFF}')
+}
+
+fn thai_leading_vowel(letter: char) -> bool {
+    matches!(letter, '\u{0E40}'..='\u{0E44}' | '\u{0EC0}'..='\u{0EC4}')
+}
+
+fn thai_trailing(letter: char) -> bool {
+    matches!(
+        letter,
+        '\u{0E2F}'..='\u{0E3A}'
+            | '\u{0E45}'..='\u{0E4E}'
+            | '\u{0EAF}'..='\u{0EBD}'
+            | '\u{0EC6}'..='\u{0ECE}'
+            | '\u{102B}'..='\u{103F}'
+            | '\u{1056}'..='\u{1059}'
+            | '\u{17B4}'..='\u{17D3}'
+    )
+}
+
+fn thai_needs_coda(letter: char) -> bool {
+    matches!(
+        letter,
+        '\u{0E31}' | '\u{0E37}' | '\u{0E47}' | '\u{0EB1}' | '\u{0EB7}'
+    )
+}
+
+fn thai_tone(letter: char) -> bool {
+    matches!(letter, '\u{0E48}'..='\u{0E4B}' | '\u{0EC8}'..='\u{0ECB}')
+}
+
+fn script_separable(left: &str, right: &str) -> bool {
+    let Some(last) = left.chars().next_back() else {
+        return false;
+    };
+    let Some(first) = right.chars().next() else {
+        return false;
+    };
+    if !parts(last, first) {
+        return false;
+    }
+    if thai_or_lao(last) || thai_or_lao(first) {
+        let mut back = left.chars().rev();
+        while let Some(ch) = back.next() {
+            if thai_tone(ch) {
+                continue;
+            }
+            if thai_needs_coda(ch) {
+                return false;
+            }
+            break;
+        }
+        let left_chars = left.chars().collect::<Vec<_>>();
+        let len = left_chars.len();
+        if len >= 2
+            && thai_leading_vowel(left_chars[len - 2])
+            && matches!(first, 'ร' | 'ล' | 'ว')
+            && right.chars().nth(1).is_some_and(thai_trailing)
+        {
+            return false;
+        }
+        let mut lookahead = right.chars();
+        let _ = lookahead.next();
+        for ch in lookahead {
+            if thai_tone(ch) || matches!(ch, '\u{0E38}' | '\u{0E39}' | '\u{0E3A}') {
+                continue;
+            }
+            if ch == '\u{0E4C}' {
+                return false;
+            }
+            break;
+        }
+    }
+    true
+}
+
 fn parts(left: char, right: char) -> bool {
     if !wide(left) || !wide(right) {
+        return false;
+    }
+    if thai_leading_vowel(left) || thai_trailing(right) {
         return false;
     }
 
@@ -2633,12 +2741,11 @@ fn wrap_fragment_widths(widths: &[Pixels], breaks: &[bool], width: Pixels) -> Ve
     let mut used = px(0.);
 
     for (index, fragment) in widths.iter().copied().enumerate() {
-        if index > start
-            && used + fragment > width
-            && let Some(split) = (start + 1..=index)
+        if index > start && used + fragment > width {
+            let split = (start + 1..=index)
                 .rev()
                 .find(|at| breaks.get(*at).copied().unwrap_or(true))
-        {
+                .unwrap_or(index);
             rows.push(start..split);
             used = widths[split..index].iter().copied().sum();
             start = split;

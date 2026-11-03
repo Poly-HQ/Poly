@@ -140,10 +140,25 @@ impl Asset for ArtworkAssetLoader {
         cx: &mut App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let svg_renderer = cx.svg_renderer();
+        let resource = source.resource.clone();
         let bytes = fetch(source.resource, cx);
 
         async move {
             let bytes = bytes.await?;
+
+            if is_mp4(&bytes) {
+                return on_decoder(move || {
+                    let image = Arc::new(RenderImage::new(mp4_frames(
+                        &resource,
+                        &bytes,
+                        source.edge,
+                    )?));
+                    let palette = of_image(&image);
+                    Ok(Decoded { image, palette })
+                })
+                .await
+                .unwrap_or_else(|| Err(ImageCacheError::Asset("artwork decoder stopped".into())));
+            }
 
             let Ok(format) = image::guess_format(&bytes) else {
                 let image = svg_renderer.render_single_frame(&bytes, 1.0)?;
@@ -294,6 +309,425 @@ fn artwork_frame(image: DynamicImage, edge: u32) -> RgbaImage {
 fn bgra(image: &mut RgbaImage) {
     for pixel in image.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
+    }
+}
+
+fn is_mp4(bytes: &[u8]) -> bool {
+    bytes.len() > 12 && &bytes[4..8] == b"ftyp"
+}
+
+fn mp4_frames(
+    resource: &Resource,
+    bytes: &[u8],
+    edge: u32,
+) -> Result<Vec<Frame>, ImageCacheError> {
+    #[cfg(target_os = "windows")]
+    {
+        let path = match resource {
+            Resource::Path(path) => path.as_ref().to_path_buf(),
+            _ => {
+                let dir = std::env::temp_dir().join("poly-motion");
+                let _ = std::fs::create_dir_all(&dir);
+                let file = dir.join("inline-motion.mp4");
+                std::fs::write(&file, bytes)?;
+                file
+            }
+        };
+        let max_frames = if edge > 0 && edge <= PALETTE_EDGE { 1 } else { 75 };
+        let target_edge = if edge == 0 { 320 } else { edge.min(320) };
+        win_mf::decode_mp4_file(&path, target_edge, max_frames)
+            .ok_or_else(|| ImageCacheError::Asset("cannot decode mp4 artwork".into()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (resource, bytes, edge);
+        Err(ImageCacheError::Asset("mp4 artwork unsupported".into()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod win_mf {
+    use std::ffi::{c_char, c_void};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr::null_mut;
+    use std::sync::OnceLock;
+
+    use image::{Delay, Frame, RgbaImage, imageops};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Guid {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
+    }
+
+    const MF_VERSION: u32 = 0x0002_0070;
+    const FIRST_VIDEO_STREAM: u32 = 0xFFFF_FFFC;
+    const STREAM_TICK_FLAGS_EOF_OR_ERR: u32 = 0x01 | 0x02;
+    const STREAM_MEDIA_TYPE_CHANGED: u32 = 0x20;
+
+    const MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING: Guid = Guid {
+        data1: 0xfb39_4f3d,
+        data2: 0xccf1,
+        data3: 0x42ee,
+        data4: [0xbb, 0xb3, 0xf9, 0xb8, 0x45, 0xd5, 0x68, 0x1d],
+    };
+    const MF_MT_MAJOR_TYPE: Guid = Guid {
+        data1: 0x48eb_a18e,
+        data2: 0xf8c9,
+        data3: 0x4687,
+        data4: [0xbf, 0x11, 0x0a, 0x74, 0xc9, 0xf9, 0x6a, 0x8f],
+    };
+    const MF_MT_SUBTYPE: Guid = Guid {
+        data1: 0xf7e3_4c9a,
+        data2: 0x42e8,
+        data3: 0x4714,
+        data4: [0xb7, 0x4b, 0xcb, 0x29, 0xd7, 0x2c, 0x35, 0xe5],
+    };
+    const MF_MT_FRAME_SIZE: Guid = Guid {
+        data1: 0x1652_c33d,
+        data2: 0xd6b2,
+        data3: 0x4012,
+        data4: [0xb8, 0x34, 0x72, 0x03, 0x08, 0x49, 0xa3, 0x7d],
+    };
+    const MF_MT_FRAME_RATE: Guid = Guid {
+        data1: 0xc459_a2e8,
+        data2: 0x3d2c,
+        data3: 0x4e44,
+        data4: [0xb1, 0x32, 0xfe, 0xe5, 0x15, 0x6c, 0x7b, 0xb0],
+    };
+    const MF_MT_DEFAULT_STRIDE: Guid = Guid {
+        data1: 0x644b_4e48,
+        data2: 0x1e02,
+        data3: 0x4516,
+        data4: [0xb0, 0xeb, 0xc0, 0x1c, 0xa9, 0xd4, 0x9a, 0xc6],
+    };
+    const MF_MEDIA_TYPE_VIDEO: Guid = Guid {
+        data1: 0x7364_6976,
+        data2: 0x0000,
+        data3: 0x0010,
+        data4: [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
+    };
+    const MF_VIDEO_FORMAT_RGB32: Guid = Guid {
+        data1: 0x0000_0016,
+        data2: 0x0000,
+        data3: 0x0010,
+        data4: [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
+    };
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+
+    type FnMfStartup = unsafe extern "system" fn(u32, u32) -> i32;
+    type FnMfCreateAttributes = unsafe extern "system" fn(*mut *mut c_void, u32) -> i32;
+    type FnMfCreateMediaType = unsafe extern "system" fn(*mut *mut c_void) -> i32;
+    type FnMfCreateSourceReaderFromUrl =
+        unsafe extern "system" fn(*const u16, *mut c_void, *mut *mut c_void) -> i32;
+
+    struct MfProcs {
+        create_attributes: FnMfCreateAttributes,
+        create_media_type: FnMfCreateMediaType,
+        create_reader: FnMfCreateSourceReaderFromUrl,
+    }
+
+    static MF_PROCS: OnceLock<Option<MfProcs>> = OnceLock::new();
+
+    fn procs() -> Option<&'static MfProcs> {
+        MF_PROCS
+            .get_or_init(|| unsafe {
+                let mfplat = LoadLibraryA(c"mfplat.dll".as_ptr());
+                let mfreadwrite = LoadLibraryA(c"mfreadwrite.dll".as_ptr());
+                if mfplat.is_null() || mfreadwrite.is_null() {
+                    return None;
+                }
+                let startup = GetProcAddress(mfplat, c"MFStartup".as_ptr());
+                let create_attributes = GetProcAddress(mfplat, c"MFCreateAttributes".as_ptr());
+                let create_media_type = GetProcAddress(mfplat, c"MFCreateMediaType".as_ptr());
+                let create_reader =
+                    GetProcAddress(mfreadwrite, c"MFCreateSourceReaderFromURL".as_ptr());
+                if startup.is_null()
+                    || create_attributes.is_null()
+                    || create_media_type.is_null()
+                    || create_reader.is_null()
+                {
+                    return None;
+                }
+                let startup: FnMfStartup = std::mem::transmute(startup);
+                if startup(MF_VERSION, 0) < 0 {
+                    return None;
+                }
+                Some(MfProcs {
+                    create_attributes: std::mem::transmute(create_attributes),
+                    create_media_type: std::mem::transmute(create_media_type),
+                    create_reader: std::mem::transmute(create_reader),
+                })
+            })
+            .as_ref()
+    }
+
+    unsafe fn vtbl_entry(obj: *mut c_void, index: usize) -> *const c_void {
+        unsafe {
+            let vtbl = *(obj as *const *const *const c_void);
+            *vtbl.add(index)
+        }
+    }
+
+    unsafe fn release(obj: *mut c_void) {
+        if !obj.is_null() {
+            unsafe {
+                let func: unsafe extern "system" fn(*mut c_void) -> u32 =
+                    std::mem::transmute(vtbl_entry(obj, 2));
+                func(obj);
+            }
+        }
+    }
+
+    struct ComGuard(*mut c_void);
+
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            unsafe { release(self.0) };
+        }
+    }
+
+    unsafe fn query_video_geometry(reader: *mut c_void) -> Option<(u32, u32, i32, u32)> {
+        unsafe {
+            let get_current_mt: unsafe extern "system" fn(
+                *mut c_void,
+                u32,
+                *mut *mut c_void,
+            ) -> i32 = std::mem::transmute(vtbl_entry(reader, 6));
+            let mut mt = null_mut();
+            if get_current_mt(reader, FIRST_VIDEO_STREAM, &mut mt) < 0 || mt.is_null() {
+                return None;
+            }
+            let _mt_guard = ComGuard(mt);
+            let get_u64: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u64) -> i32 =
+                std::mem::transmute(vtbl_entry(mt, 14));
+            let get_u32: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u32) -> i32 =
+                std::mem::transmute(vtbl_entry(mt, 13));
+
+            let mut frame_size = 0u64;
+            if get_u64(mt, &MF_MT_FRAME_SIZE, &mut frame_size) < 0 {
+                return None;
+            }
+            let width = (frame_size >> 32) as u32;
+            let height = (frame_size & 0xFFFF_FFFF) as u32;
+            if width == 0 || height == 0 {
+                return None;
+            }
+
+            let mut stride_u32 = width * 4;
+            let _ = get_u32(mt, &MF_MT_DEFAULT_STRIDE, &mut stride_u32);
+            let stride = stride_u32 as i32;
+
+            let mut frame_rate = 0u64;
+            let delay_ms = if get_u64(mt, &MF_MT_FRAME_RATE, &mut frame_rate) >= 0 {
+                let num = (frame_rate >> 32) as u32;
+                let den = (frame_rate & 0xFFFF_FFFF) as u32;
+                if num > 0 && den > 0 {
+                    ((den as u64 * 1000) / num as u64).clamp(20, 100) as u32
+                } else {
+                    40
+                }
+            } else {
+                40
+            };
+
+            Some((width, height, stride, delay_ms))
+        }
+    }
+
+    pub fn decode_mp4_file(path: &Path, target_edge: u32, max_frames: usize) -> Option<Vec<Frame>> {
+        let mf = procs()?;
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+
+        unsafe {
+            let mut attrs = null_mut();
+            if (mf.create_attributes)(&mut attrs, 1) < 0 || attrs.is_null() {
+                return None;
+            }
+            let _attrs_guard = ComGuard(attrs);
+
+            let set_u32: unsafe extern "system" fn(*mut c_void, *const Guid, u32) -> i32 =
+                std::mem::transmute(vtbl_entry(attrs, 21));
+            let _ = set_u32(attrs, &MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1);
+
+            let mut reader = null_mut();
+            if (mf.create_reader)(wide.as_ptr(), attrs, &mut reader) < 0 || reader.is_null() {
+                return None;
+            }
+            let _reader_guard = ComGuard(reader);
+
+            let mut req_mt = null_mut();
+            if (mf.create_media_type)(&mut req_mt) < 0 || req_mt.is_null() {
+                return None;
+            }
+            let _req_mt_guard = ComGuard(req_mt);
+
+            let set_guid: unsafe extern "system" fn(
+                *mut c_void,
+                *const Guid,
+                *const Guid,
+            ) -> i32 = std::mem::transmute(vtbl_entry(req_mt, 24));
+            let _ = set_guid(req_mt, &MF_MT_MAJOR_TYPE, &MF_MEDIA_TYPE_VIDEO);
+            let _ = set_guid(req_mt, &MF_MT_SUBTYPE, &MF_VIDEO_FORMAT_RGB32);
+
+            let set_current_mt: unsafe extern "system" fn(
+                *mut c_void,
+                u32,
+                *mut u32,
+                *mut c_void,
+            ) -> i32 = std::mem::transmute(vtbl_entry(reader, 7));
+            if set_current_mt(reader, FIRST_VIDEO_STREAM, null_mut(), req_mt) < 0 {
+                return None;
+            }
+
+            let (mut width, mut height, mut stride, mut delay_ms) =
+                query_video_geometry(reader)?;
+
+            let read_sample: unsafe extern "system" fn(
+                *mut c_void,
+                u32,
+                u32,
+                *mut u32,
+                *mut u32,
+                *mut i64,
+                *mut *mut c_void,
+            ) -> i32 = std::mem::transmute(vtbl_entry(reader, 9));
+
+            let mut frames = Vec::with_capacity(max_frames.min(75));
+            let mut attempts = 0usize;
+            while frames.len() < max_frames && attempts < max_frames + 16 {
+                attempts += 1;
+                let mut stream_idx = 0u32;
+                let mut flags = 0u32;
+                let mut timestamp = 0i64;
+                let mut sample = null_mut();
+
+                if read_sample(
+                    reader,
+                    FIRST_VIDEO_STREAM,
+                    0,
+                    &mut stream_idx,
+                    &mut flags,
+                    &mut timestamp,
+                    &mut sample,
+                ) < 0
+                {
+                    break;
+                }
+                let _sample_guard = ComGuard(sample);
+
+                if flags & STREAM_MEDIA_TYPE_CHANGED != 0
+                    && let Some((w, h, s, d)) = query_video_geometry(reader)
+                {
+                    width = w;
+                    height = h;
+                    stride = s;
+                    delay_ms = d;
+                }
+
+                if flags & STREAM_TICK_FLAGS_EOF_OR_ERR != 0 {
+                    break;
+                }
+
+                if sample.is_null() {
+                    continue;
+                }
+
+                let convert_contig: unsafe extern "system" fn(
+                    *mut c_void,
+                    *mut *mut c_void,
+                ) -> i32 = std::mem::transmute(vtbl_entry(sample, 41));
+                let mut buffer = null_mut();
+                if convert_contig(sample, &mut buffer) < 0 || buffer.is_null() {
+                    continue;
+                }
+                let _buffer_guard = ComGuard(buffer);
+
+                let lock_buf: unsafe extern "system" fn(
+                    *mut c_void,
+                    *mut *mut u8,
+                    *mut u32,
+                    *mut u32,
+                ) -> i32 = std::mem::transmute(vtbl_entry(buffer, 3));
+                let unlock_buf: unsafe extern "system" fn(*mut c_void) -> i32 =
+                    std::mem::transmute(vtbl_entry(buffer, 4));
+
+                let mut data_ptr: *mut u8 = null_mut();
+                let mut max_len = 0u32;
+                let mut cur_len = 0u32;
+                if lock_buf(buffer, &mut data_ptr, &mut max_len, &mut cur_len) < 0
+                    || data_ptr.is_null()
+                {
+                    continue;
+                }
+
+                let row_bytes = (width as usize) * 4;
+                let padded_w = ((width + 15) & !15) as usize;
+                let padded_h = ((height + 15) & !15) as usize;
+                let abs_stride = stride.unsigned_abs() as usize;
+                let row_stride = if (cur_len as usize) >= padded_w * padded_h * 4
+                    && abs_stride < padded_w * 4
+                {
+                    padded_w * 4
+                } else {
+                    abs_stride.max(row_bytes)
+                };
+
+                let mut out = vec![0u8; row_bytes * (height as usize)];
+                let slice = std::slice::from_raw_parts(data_ptr, cur_len as usize);
+                for y in 0..(height as usize) {
+                    let src_row = if stride < 0 {
+                        (height as usize) - 1 - y
+                    } else {
+                        y
+                    };
+                    let src_offset = src_row * row_stride;
+                    if src_offset + row_bytes <= slice.len() {
+                        let dst_offset = y * row_bytes;
+                        out[dst_offset..dst_offset + row_bytes]
+                            .copy_from_slice(&slice[src_offset..src_offset + row_bytes]);
+                    }
+                }
+                let _ = unlock_buf(buffer);
+
+                for pixel in out.as_chunks_mut::<4>().0 {
+                    pixel[3] = 255;
+                }
+
+                let Some(raw_img) = RgbaImage::from_raw(width, height, out) else {
+                    continue;
+                };
+                let final_img = if target_edge > 0 && target_edge < width.min(height) {
+                    imageops::resize(
+                        &raw_img,
+                        target_edge,
+                        target_edge,
+                        imageops::FilterType::Triangle,
+                    )
+                } else {
+                    raw_img
+                };
+
+                frames.push(Frame::from_parts(
+                    final_img,
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(delay_ms, 1),
+                ));
+            }
+
+            (!frames.is_empty()).then_some(frames)
+        }
     }
 }
 
@@ -867,6 +1301,7 @@ pub struct Artwork {
     fallback: SharedString,
     accent: bool,
     soft: bool,
+    transparent_loading: bool,
     interactivity: Interactivity,
 }
 
@@ -879,6 +1314,7 @@ impl Artwork {
             circle: false,
             radius: None,
             soft: false,
+            transparent_loading: false,
             fallback: FALLBACK_ICON.into(),
             accent: false,
             interactivity: Interactivity::new(),
@@ -915,6 +1351,11 @@ impl Artwork {
         self
     }
 
+    pub fn transparent_loading(mut self, transparent: bool) -> Self {
+        self.transparent_loading = transparent;
+        self
+    }
+
     pub fn accent(mut self) -> Self {
         self.accent = true;
         self
@@ -943,7 +1384,8 @@ impl RenderOnce for Artwork {
             fallback,
             accent,
             soft,
-            interactivity,
+            transparent_loading,
+            mut interactivity,
         } = self;
         let theme = *cx.theme();
         let muted = theme.muted_foreground;
@@ -964,6 +1406,9 @@ impl RenderOnce for Artwork {
 
         match url {
             Some(url) => {
+                if interactivity.element_id.is_none() {
+                    interactivity.element_id = Some(ElementId::Name(url.clone()));
+                }
                 let cache = ArtworkCache::entity(cx);
                 let edge = sample_edge(size, window);
                 let resource = resource_at(url, edge);
@@ -999,11 +1444,12 @@ impl RenderOnce for Artwork {
                         .size(size)
                         .object_fit(ObjectFit::Cover)
                         .rounded(rounded)
-                        .with_loading(move || {
-                            Skeleton::new()
+                        .with_loading(move || match transparent_loading {
+                            true => div().size(size).rounded(rounded).into_any_element(),
+                            false => Skeleton::new()
                                 .size(size)
                                 .rounded(rounded)
-                                .into_any_element()
+                                .into_any_element(),
                         })
                         .with_fallback(placeholder),
                     interactivity,

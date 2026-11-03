@@ -372,8 +372,9 @@ impl FullscreenView {
         };
         let cover_large = self.cover.read(cx).large();
         let local = local_id || small.as_ref().is_some_and(|url| url.starts_with("file://"));
-        let large =
-            cover_large.filter(|url| !local && small.is_some() && Some(*url) != small.as_deref());
+        let large = cover_large.filter(|url| {
+            url.ends_with(".mp4") || (!local && small.is_some() && Some(*url) != small.as_deref())
+        });
 
         if self.large.as_deref() != large {
             self.large = large.map(SharedString::from);
@@ -416,7 +417,8 @@ impl FullscreenView {
                                 .child(
                                     Artwork::new(Some(url))
                                         .size(raster_side)
-                                        .corner_radius(radius),
+                                        .corner_radius(radius)
+                                        .transparent_loading(true),
                                 )
                                 .motion(("cover-large", revision), Motion::Slow, |art, t| {
                                     art.opacity(t)
