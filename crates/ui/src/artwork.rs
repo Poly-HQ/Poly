@@ -335,8 +335,30 @@ fn mp4_frames(
         };
         let max_frames = if edge > 0 && edge <= PALETTE_EDGE { 1 } else { 75 };
         let target_edge = if edge == 0 { 320 } else { edge.min(320) };
-        win_mf::decode_mp4_file(&path, target_edge, max_frames)
-            .ok_or_else(|| ImageCacheError::Asset("cannot decode mp4 artwork".into()))
+        println!(
+            "[motion-artwork] Decoding MP4 frames for path: {} (bytes: {}, target_edge: {}, max_frames: {})",
+            path.display(),
+            bytes.len(),
+            target_edge,
+            max_frames
+        );
+        match win_mf::decode_mp4_file(&path, target_edge, max_frames) {
+            Some(frames) => {
+                println!(
+                    "[motion-artwork] Decoded {} frames successfully from {}",
+                    frames.len(),
+                    path.display()
+                );
+                Ok(frames)
+            }
+            None => {
+                println!(
+                    "[motion-artwork] Failed to decode MP4 file via Media Foundation: {}",
+                    path.display()
+                );
+                Err(ImageCacheError::Asset("cannot decode mp4 artwork".into()))
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {

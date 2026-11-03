@@ -377,6 +377,7 @@ impl FullscreenView {
         });
 
         if self.large.as_deref() != large {
+            println!("[fullscreen] Active artwork URL switched to: {:?}", large);
             self.large = large.map(SharedString::from);
             self.revision += 1;
         }

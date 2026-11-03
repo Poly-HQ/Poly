@@ -157,8 +157,14 @@ impl Cover {
                     this.task = None;
                     this.motion_cache.insert(key.clone(), found_motion.clone());
                     if this.key.as_deref() == Some(key.as_str()) && found_motion.is_some() {
+                        println!(
+                            "[motion-artwork] Applying motion artwork to Cover state: {:?}",
+                            found_motion
+                        );
                         this.motion = found_motion;
                         cx.notify();
+                    } else if found_motion.is_none() {
+                        println!("[motion-artwork] Lookup completed: no motion artwork available for this track");
                     }
                 });
             } else {

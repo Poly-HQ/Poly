@@ -341,19 +341,11 @@ impl Render for PlayerBar {
                                     };
                                     let max_width = px(max_width_f32);
 
-                                    let name_width: f32 = t
-                                        .name
-                                        .chars()
-                                        .map(|c| if c.is_ascii() { 8.5 } else { 14.5 })
-                                        .sum();
-                                    let artists_width: f32 = t
-                                        .artists
-                                        .chars()
-                                        .map(|c| if c.is_ascii() { 7.5 } else { 13.5 })
-                                        .sum();
-                                    let unit_width = (name_width + 8.0 + artists_width + 16.0).max(160.0);
+                                    let name_width = estimate_player_text_width(&t.name, true);
+                                    let artists_width = estimate_player_text_width(&t.artists, false);
+                                    let unit_width = name_width + 8.0 + artists_width;
                                     let is_long = unit_width > max_width_f32;
-                                    let gap = 56.0;
+                                    let gap = 48.0;
                                     let total_span = unit_width + gap;
                                     let mut offset = Pixels::ZERO;
 
@@ -431,7 +423,7 @@ impl Render for PlayerBar {
                                         div()
                                             .flex()
                                             .flex_none()
-                                            .w(px(unit_width))
+                                            .when(is_long, |this| this.w(px(unit_width)))
                                             .items_center()
                                             .gap_2()
                                             .whitespace_nowrap()
@@ -468,7 +460,7 @@ impl Render for PlayerBar {
                                     div()
                                         .id("now-playing-track-marquee-container")
                                         .overflow_hidden()
-                                        .max_w(max_width)
+                                        .when(is_long, |this| this.max_w(max_width))
                                         .child(content)
                                 }
                                 None => {
@@ -609,4 +601,28 @@ impl Render for PlayerBar {
 
         content.when_some(context_menu, |this, menu| this.child(menu))
     }
+}
+
+fn estimate_player_text_width(text: &str, is_bold: bool) -> f32 {
+    let mut width = 0.0;
+    for c in text.chars() {
+        let u = c as u32;
+        if (0x0E31..=0x0E3A).contains(&u) || (0x0E47..=0x0E4E).contains(&u) {
+            continue;
+        }
+        if c.is_ascii_whitespace() {
+            width += 4.0;
+        } else if c.is_ascii_punctuation() {
+            width += 4.5;
+        } else if c.is_ascii() {
+            width += if is_bold { 8.0 } else { 7.2 };
+        } else if (0x0E00..=0x0E7F).contains(&u) {
+            width += if is_bold { 10.0 } else { 9.0 };
+        } else if (0x3000..=0x9FFF).contains(&u) || (0xAC00..=0xD7AF).contains(&u) {
+            width += 14.0;
+        } else {
+            width += 8.5;
+        }
+    }
+    width
 }

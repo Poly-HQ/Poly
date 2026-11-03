@@ -210,12 +210,24 @@ fn compared(text: &str) -> String {
         .join(" ")
 }
 
-const APPLE_CATALOG: &str = "https://amp-api.music.apple.com/v1/catalog/us";
+const APPLE_CATALOG_BASE: &str = "https://amp-api.music.apple.com/v1/catalog";
 const APPLE_ORIGIN: &str = "https://music.apple.com";
 const APPLE_REFERER: &str = "https://music.apple.com/";
-const MAX_MOTION_BYTES: u64 = 550_000;
+const MAX_MOTION_BYTES: u64 = 3_500_000;
 
 static MOTION_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn detect_storefront(text: &str) -> &'static str {
+    for ch in text.chars() {
+        match ch as u32 {
+            0x0E00..=0x0E7F => return "th",
+            0x3040..=0x30FF | 0x31F0..=0x31FF => return "jp",
+            0xAC00..=0xD7AF | 0x1100..=0x11FF => return "kr",
+            _ => {}
+        }
+    }
+    "us"
+}
 
 #[derive(Deserialize)]
 struct AppleDocument<T> {
@@ -283,10 +295,40 @@ struct AppleIdItem {
 }
 
 pub async fn motion_artwork(album_id: Option<&str>, track: &Track) -> Option<String> {
+    println!(
+        "[motion-artwork] Starting lookup: name='{}', artists='{}', album='{}', album_id={:?}",
+        track.name, track.artists, track.album, album_id
+    );
     let http = MOTION_HTTP.get_or_init(reqwest::Client::new);
-    let token = crate::apple::auth::bearer(http).await.ok()?;
-    let playlist = resolve_motion_playlist(http, &token, album_id, track).await?;
-    download_motion_mp4(http, &playlist).await
+    let token = match crate::apple::auth::bearer(http).await {
+        Ok(t) => {
+            println!("[motion-artwork] Apple Music bearer token acquired ({} chars)", t.len());
+            t
+        }
+        Err(err) => {
+            println!("[motion-artwork] Failed to acquire Apple Music bearer token: {err:#}");
+            return None;
+        }
+    };
+    let playlist = match resolve_motion_playlist(http, &token, album_id, track).await {
+        Some(p) => {
+            println!("[motion-artwork] Resolved motion playlist: {}", p);
+            p
+        }
+        None => {
+            println!(
+                "[motion-artwork] No motion video found for '{}' by '{}'",
+                track.name, track.artists
+            );
+            return None;
+        }
+    };
+    let mp4_result = download_motion_mp4(http, &playlist).await;
+    match &mp4_result {
+        Some(path) => println!("[motion-artwork] Motion MP4 ready at: {}", path),
+        None => println!("[motion-artwork] Failed to download motion MP4 from {}", playlist),
+    }
+    mp4_result
 }
 
 async fn resolve_motion_playlist(
@@ -295,12 +337,6 @@ async fn resolve_motion_playlist(
     album_id: Option<&str>,
     track: &Track,
 ) -> Option<String> {
-    if let Some(id) = album_id.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
-        && let Some(video) = fetch_apple_album_motion(http, token, id).await
-    {
-        return Some(video);
-    }
-
     let artist = track
         .artist_refs
         .first()
@@ -310,29 +346,44 @@ async fn resolve_motion_playlist(
         .unwrap_or_default();
     let album = searchable(&track.album);
     let title = searchable(&track.name);
-    if artist.is_empty() && album.is_empty() && title.is_empty() {
-        return None;
+
+    let mut storefronts = Vec::new();
+    let detected = detect_storefront(&format!("{} {} {}", track.name, track.artists, track.album));
+    storefronts.push(detected);
+    if detected != "us" {
+        storefronts.push("us");
+    } else {
+        storefronts.push("th");
     }
 
-    if !album.is_empty() {
-        let term = if artist.is_empty() {
-            album.clone()
-        } else {
-            format!("{artist} {album}")
-        };
-        if let Some(video) = search_apple_motion(http, token, &term, &artist, &album, &title).await {
+    for storefront in storefronts {
+        println!("[motion-artwork] Trying storefront '{}'", storefront);
+        if let Some(id) = album_id.filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+            && let Some(video) = fetch_apple_album_motion(http, token, storefront, id).await
+        {
             return Some(video);
         }
-    }
 
-    if !title.is_empty() && title != album {
-        let term = if artist.is_empty() {
-            title.clone()
-        } else {
-            format!("{artist} {title}")
-        };
-        if let Some(video) = search_apple_motion(http, token, &term, &artist, &album, &title).await {
-            return Some(video);
+        if !album.is_empty() {
+            let term = if artist.is_empty() {
+                album.clone()
+            } else {
+                format!("{artist} {album}")
+            };
+            if let Some(video) = search_apple_motion(http, token, storefront, &term, &artist, &album, &title).await {
+                return Some(video);
+            }
+        }
+
+        if !title.is_empty() && title != album {
+            let term = if artist.is_empty() {
+                title.clone()
+            } else {
+                format!("{artist} {title}")
+            };
+            if let Some(video) = search_apple_motion(http, token, storefront, &term, &artist, &album, &title).await {
+                return Some(video);
+            }
         }
     }
 
@@ -342,10 +393,12 @@ async fn resolve_motion_playlist(
 async fn fetch_apple_album_motion(
     http: &reqwest::Client,
     token: &str,
+    storefront: &str,
     album_id: &str,
 ) -> Option<String> {
-    let url = format!("{APPLE_CATALOG}/albums/{album_id}");
-    let doc: AppleDocument<AppleAlbumItem> = http
+    let url = format!("{APPLE_CATALOG_BASE}/{storefront}/albums/{album_id}");
+    println!("[motion-artwork] Requesting album motion: {}", url);
+    let resp = http
         .get(url)
         .bearer_auth(token)
         .header(reqwest::header::ORIGIN, APPLE_ORIGIN)
@@ -354,27 +407,33 @@ async fn fetch_apple_album_motion(
         .query(&[("extend", "editorialVideo")])
         .send()
         .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
         .ok()?;
-    doc.data
+    if !resp.status().is_success() {
+        println!("[motion-artwork] Album query status: {}", resp.status());
+        return None;
+    }
+    let doc: AppleDocument<AppleAlbumItem> = resp.json().await.ok()?;
+    let video = doc.data
         .into_iter()
-        .find_map(|item| extract_editorial_video(item.attributes?.editorial_video))
+        .find_map(|item| extract_editorial_video(item.attributes?.editorial_video));
+    if let Some(v) = &video {
+        println!("[motion-artwork] Album id {} has editorial video: {}", album_id, v);
+    }
+    video
 }
 
 async fn search_apple_motion(
     http: &reqwest::Client,
     token: &str,
+    storefront: &str,
     term: &str,
     artist: &str,
     album: &str,
     title: &str,
 ) -> Option<String> {
-    let url = format!("{APPLE_CATALOG}/search");
-    let resp: AppleSearchResponse = http
+    let url = format!("{APPLE_CATALOG_BASE}/{storefront}/search");
+    println!("[motion-artwork] Searching catalog ({storefront}) term: '{}'", term);
+    let resp = http
         .get(url)
         .bearer_auth(token)
         .header(reqwest::header::ORIGIN, APPLE_ORIGIN)
@@ -383,20 +442,21 @@ async fn search_apple_motion(
         .query(&[
             ("term", term),
             ("types", "albums,songs"),
-            ("limit", "8"),
+            ("limit", "10"),
             ("extend", "editorialVideo"),
         ])
         .send()
         .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
         .ok()?;
+    if !resp.status().is_success() {
+        println!("[motion-artwork] Search query status: {}", resp.status());
+        return None;
+    }
+    let resp: AppleSearchResponse = resp.json().await.ok()?;
     let results = resp.results?;
 
     if let Some(albums) = results.albums {
+        println!("[motion-artwork] Found {} candidate album(s)", albums.data.len());
         let matched = albums
             .data
             .into_iter()
@@ -404,6 +464,7 @@ async fn search_apple_motion(
             .filter(|attr| artist.is_empty() || same_artist(&attr.artist_name, artist))
             .filter_map(|attr| {
                 let video = extract_editorial_video(attr.editorial_video)?;
+                println!("[motion-artwork] Album candidate '{}' has motion video", attr.name);
                 Some((attr.name, Some(video)))
             })
             .collect::<Vec<_>>();
@@ -413,13 +474,17 @@ async fn search_apple_motion(
             return Some(video);
         }
         if !title.is_empty()
-            && let Some(video) = closest(matched.into_iter(), title)
+            && let Some(video) = closest(matched.iter().cloned(), title)
         {
             return Some(video);
+        }
+        if matched.len() == 1 {
+            return matched.into_iter().next().and_then(|(_, v)| v);
         }
     }
 
     if let Some(songs) = results.songs {
+        println!("[motion-artwork] Found {} candidate song(s)", songs.data.len());
         for song in songs.data {
             let Some(attr) = song.attributes else {
                 continue;
@@ -437,7 +502,7 @@ async fn search_apple_motion(
                 .and_then(|rel| rel.albums)
                 .and_then(|albums| albums.data.into_iter().next())
                 .map(|item| item.id)
-                && let Some(video) = fetch_apple_album_motion(http, token, &album_id).await
+                && let Some(video) = fetch_apple_album_motion(http, token, storefront, &album_id).await
             {
                 return Some(video);
             }
@@ -464,9 +529,11 @@ async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option
     std::fs::create_dir_all(&dir).ok()?;
     let target = dir.join(format!("{key:016x}.mp4"));
     if std::fs::metadata(&target).is_ok_and(|meta| meta.len() > 1024) {
+        println!("[motion-artwork] Using disk-cached MP4: {}", target.display());
         return Some(format!("file://{}", target.display()));
     }
 
+    println!("[motion-artwork] Fetching master playlist: {}", master_url);
     let master_text = http
         .get(master_url)
         .header(reqwest::header::USER_AGENT, crate::apple::auth::AGENT)
@@ -480,6 +547,7 @@ async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option
         .ok()?;
     let variant_uri = pick_square_avc1_variant(&master_text)?;
     let variant_url = resolve_relative_url(master_url, &variant_uri)?;
+    println!("[motion-artwork] Picked variant stream: {}", variant_url);
 
     let variant_text = http
         .get(&variant_url)
@@ -494,6 +562,7 @@ async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option
         .ok()?;
     let (mp4_uri, end_byte) = parse_variant_mp4_range(&variant_text)?;
     let mp4_url = resolve_relative_url(&variant_url, &mp4_uri)?;
+    println!("[motion-artwork] Downloading MP4 fragment: {}, max_end: {}", mp4_url, end_byte);
 
     let mut request = http
         .get(&mp4_url)
@@ -511,6 +580,7 @@ async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option
         .await
         .ok()?;
     if bytes.len() <= 1024 {
+        println!("[motion-artwork] Downloaded MP4 is too small ({} bytes)", bytes.len());
         return None;
     }
 
@@ -520,6 +590,7 @@ async fn download_motion_mp4(http: &reqwest::Client, master_url: &str) -> Option
     if !target.exists() {
         std::fs::write(&target, &bytes).ok()?;
     }
+    println!("[motion-artwork] Successfully saved {} bytes to {}", bytes.len(), target.display());
     Some(format!("file://{}", target.display()))
 }
 
@@ -533,13 +604,18 @@ fn pick_square_avc1_variant(master: &str) -> Option<String> {
         let uri = lines
             .by_ref()
             .find(|next| !next.is_empty() && !next.starts_with('#'))?;
-        if !info.contains("avc1") {
+        let info_lower = info.to_ascii_lowercase();
+        if !info_lower.contains("avc1") && !info_lower.contains("hvc1") {
             continue;
         }
         let Some((width, height)) = parse_m3u8_resolution(info) else {
             continue;
         };
-        if width != height || width < 240 {
+        let aspect_diff = (width as i32 - height as i32).abs();
+        if aspect_diff > 8 && (width as f32 / height as f32 - 1.0).abs() > 0.05 {
+            continue;
+        }
+        if width < 240 {
             continue;
         }
         let bandwidth = parse_m3u8_u64(info, "BANDWIDTH=").unwrap_or(0);
