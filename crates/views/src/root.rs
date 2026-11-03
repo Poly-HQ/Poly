@@ -707,7 +707,7 @@ impl Root {
 
 const UI_FONT: &str = "Inter";
 
-const SCRIPTS: [&str; 27] = [
+const SCRIPTS: [&str; 29] = [
     "SF Pro Text",
     "SF Pro Display",
     "SF Pro",
@@ -716,6 +716,8 @@ const SCRIPTS: [&str; 27] = [
     "Noto Sans Thai",
     "Noto Sans Thai UI",
     "NotoSansThai",
+    "Noto Sans Thai SemBd",
+    "Noto Sans Thai Med",
     "Leelawadee UI",
     "Leelawadee",
     "Source Han Sans",
