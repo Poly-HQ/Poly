@@ -46,7 +46,7 @@ fn ensure_windows_user_fonts() {
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(subkey.as_ptr()),
-            0,
+            None,
             None,
             Default::default(),
             KEY_WRITE,
@@ -92,7 +92,7 @@ fn ensure_windows_user_fonts() {
             let _ = RegSetValueExW(
                 hkey,
                 PCWSTR(reg_key_wide.as_ptr()),
-                0,
+                None,
                 REG_SZ,
                 Some(val_bytes),
             );
