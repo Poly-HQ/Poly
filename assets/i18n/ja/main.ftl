@@ -570,11 +570,15 @@ settings-source = ソースコード
 settings-source-detail = このビルドの対応ソース
 settings-source-view = リポジトリを開く
 settings-team = チーム
+settings-forked-from = フォーク元
 settings-team-github = GitHub
 settings-role-lead-maintainer = リードメンテナー
 settings-role-maintainer = メンテナー
 settings-role-contributor = コントリビューター
 settings-notice = Copyright © 2026 Sonora Contributors. Sonora は完全に無保証です。フリーソフトウェアであり、GNU General Public License バージョン 3 以降の条件のもとで自由に再配布できます。Sonora は非公式であり、Spotify AB とは無関係です。
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = 高ビットレートのオーディオストリームとPremium再生機能を有効にする
 
 # themes
 theme-system = システム

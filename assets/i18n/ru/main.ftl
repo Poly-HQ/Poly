@@ -748,11 +748,15 @@ settings-source = Исходный код
 settings-source-detail = Исходный код, соответствующий этой сборке
 settings-source-view = Открыть репозиторий
 settings-team = Команда
+settings-forked-from = Форк от
 settings-team-github = GitHub
 settings-role-lead-maintainer = Ведущий разработчик
 settings-role-maintainer = Разработчик
 settings-role-contributor = Контрибьютор
 settings-notice = Copyright © 2026 Sonora Contributors. Sonora поставляется без каких-либо гарантий. Это свободное программное обеспечение, и вы можете распространять его на условиях GNU General Public License версии 3 или новее. Sonora — неофициальный клиент и не связан со Spotify AB.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Включить аудиопотоки с высоким битрейтом и функции воспроизведения Premium
 
 # themes
 theme-system = Системная

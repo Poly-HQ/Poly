@@ -612,11 +612,15 @@ settings-source = 源代码
 settings-source-detail = 此构建对应的源代码
 settings-source-view = 打开仓库
 settings-team = 团队
+settings-forked-from = 复刻自
 settings-team-github = GitHub
 settings-role-lead-maintainer = 首席维护者
 settings-role-maintainer = 维护者
 settings-role-contributor = 贡献者
 settings-notice = 版权所有 © 2026 Sonora 贡献者。Sonora 不提供任何担保。它是自由软件，你可以根据 GNU 通用公共许可证第 3 版或更高版本的条款重新分发。Sonora 是非官方项目，与 Spotify AB 无关联。
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = 启用高比特率音频流和 Premium 播放功能
 
 # themes
 theme-system = 系统

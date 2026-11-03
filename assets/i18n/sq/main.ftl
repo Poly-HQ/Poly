@@ -720,11 +720,15 @@ settings-source = Kodi burimor
 settings-source-detail = Burimi përkatës për këtë ndërtim
 settings-source-view = Hap depon
 settings-team = Ekipi
+settings-forked-from = Forkuar nga
 settings-team-github = GitHub
 settings-role-lead-maintainer = Mirëmbajtës kryesor
 settings-role-maintainer = Mirëmbajtës
 settings-role-contributor = Kontribues
 settings-notice = Copyright © 2026 Sonora Contributors. Sonora vjen pa asnjë garanci. Është softuer i lirë, dhe mund ta rishpërndash sipas kushteve të GNU General Public License version 3 ose më vonë. Sonora është jozyrtare dhe nuk është e lidhur me Spotify AB.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Aktivizo transmetimin e audios me shpejtësi të lartë bitesh dhe veçoritë Premium të luajtjes
 
 # themes
 theme-system = Sistemi

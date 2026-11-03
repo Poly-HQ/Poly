@@ -595,11 +595,15 @@ settings-source = Kaynak kodu
 settings-source-detail = Bu yapıya karşılık gelen kaynak
 settings-source-view = Depoyu aç
 settings-team = Ekip
+settings-forked-from = Çatallandığı kaynak
 settings-team-github = GitHub
 settings-role-lead-maintainer = Baş Bakımcı
 settings-role-maintainer = Bakımcı
 settings-role-contributor = Katkıda Bulunan
 settings-notice = Copyright © 2026 Sonora Contributors. Sonora kesinlikle hiçbir garanti vermez. Bu özgür bir yazılımdır ve GNU Genel Kamu Lisansı sürüm 3 ya da sonrasının koşulları altında yeniden dağıtabilirsin. Sonora resmi değildir ve Spotify AB ile bağlantısı yoktur.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Yüksek bit hızında ses akışlarını ve Premium oynatma özelliklerini etkinleştirin
 
 # themes
 theme-system = Sistem

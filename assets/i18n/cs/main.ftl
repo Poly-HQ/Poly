@@ -775,11 +775,15 @@ settings-source = Zdrojový kód
 settings-source-detail = Zdrojový kód pro toto sestavení
 settings-source-view = Otevřít repozitář
 settings-team = Tým
+settings-forked-from = Forkováno z
 settings-team-github = GitHub
 settings-role-lead-maintainer = Hlavní správce
 settings-role-maintainer = Správce
 settings-role-contributor = Přispěvatel
 settings-notice = Copyright © 2026 Přispěvatelé projektu Sonora. Sonora je poskytována bez jakýchkoli záruk. Jde o svobodný software a můžeš ji šířit za podmínek GNU General Public License verze 3 nebo novější. Sonora není oficiální a není spojena se Spotify AB.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Povolit zvukové toky s vysokým datovým tokem a funkce Premium
 
 # themes
 theme-system = Podle systému

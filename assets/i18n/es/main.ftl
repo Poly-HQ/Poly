@@ -701,11 +701,15 @@ settings-source = Código fuente
 settings-source-detail = El código fuente correspondiente a esta compilación
 settings-source-view = Abrir el repositorio
 settings-team = Equipo
+settings-forked-from = Bifurcado de
 settings-team-github = GitHub
 settings-role-lead-maintainer = Responsable principal
 settings-role-maintainer = Responsable
 settings-role-contributor = Colaborador
 settings-notice = Copyright © 2026 Sonora Contributors. Sonora se distribuye sin ninguna garantía. Es software libre y puedes redistribuirlo según los términos de la Licencia Pública General de GNU, versión 3 o posterior. Sonora es un cliente no oficial y no está afiliado a Spotify AB.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Habilitar flujos de audio de alta tasa de bits y funciones de reproducción Premium
 
 # themes
 theme-system = Sistema

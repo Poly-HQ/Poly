@@ -612,11 +612,15 @@ settings-source = Kode sumber
 settings-source-detail = Sumber kode yang sesuai untuk build ini
 settings-source-view = Buka repositori
 settings-team = Tim
+settings-forked-from = Di-fork dari
 settings-team-github = GitHub
 settings-role-lead-maintainer = Pemelihara Utama
 settings-role-maintainer = Pemelihara
 settings-role-contributor = Kontributor
 settings-notice = Hak cipta © 2026 Sonora Contributors. Sonora hadir tanpa jaminan apa pun. Ini adalah perangkat lunak bebas, dan Anda dipersilakan untuk mendistribusikannya kembali sesuai dengan ketentuan GNU General Public License versi 3 atau yang lebih baru. Sonora bersifat tidak resmi dan tidak berafiliasi dengan Spotify AB.
+
+settings-youtube-premium = YouTube Premium
+settings-youtube-premium-detail = Aktifkan streaming audio bitrate tinggi dan fitur pemutaran Premium
 
 # themes
 theme-system = System
